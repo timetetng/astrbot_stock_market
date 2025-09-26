@@ -39,7 +39,6 @@ jinja_env = Environment(loader=FileSystemLoader(TEMPLATES_DIR), autoescape=True,
 @register("stock_market", "timetetng", "一个功能重构的模拟炒股插件", "3.0.0")
 class StockMarketRefactored(Star):
     def __init__(self, context: Context):
-        logger.info(">>> [DIAGNOSTIC] 1. StockMarketRefactored __init__ starts.")
         super().__init__(context)
         # --- 状态管理 ---
         self.stocks: Dict[str, VirtualStock] = {}
@@ -68,7 +67,6 @@ class StockMarketRefactored(Star):
         self._ready_event = asyncio.Event()
         # --- 初始化任务 ---
         self.init_task = asyncio.create_task(self.plugin_init())
-        logger.info(">>> [DIAGNOSTIC] 1. StockMarketRefactored __init__ finished.") # 添加这一行
 
     async def terminate(self):
         logger.info("开始关闭模拟炒股插件...")
@@ -81,7 +79,6 @@ class StockMarketRefactored(Star):
 
     async def plugin_init(self):
         """插件的异步初始化流程。"""
-        logger.info(">>> [DIAGNOSTIC] 2. plugin_init starts.")
         await self._wait_for_services()
         
         self.db_manager = DatabaseManager(self.db_path)
@@ -90,15 +87,11 @@ class StockMarketRefactored(Star):
         self.broadcast_subscribers = await self.db_manager.load_subscriptions()
         
         await self._start_playwright_browser()
-        logger.info(">>> [DIAGNOSTIC] 3. About to create WebServer instance.")
         self.simulation_manager = MarketSimulation(self)
         self.trading_manager = TradingManager(self)
         self.web_server = WebServer(self)
-        logger.info(">>> [DIAGNOSTIC] 4. WebServer instance created successfully.")
         self.simulation_manager.start()
-        logger.info(">>> [DIAGNOSTIC] 5. About to start WebServer.")
         await self.web_server.start()
-        logger.info(">>> [DIAGNOSTIC] 6. WebServer started successfully.")
         shared_services["stock_market_api"] = self.api
         logger.info(f"模拟炒股插件已加载。数据库: {self.db_path}")
         self._ready_event.set()
@@ -171,6 +164,77 @@ class StockMarketRefactored(Star):
         for s in self.stocks.values():
             if s.name == identifier: return s
         return None
+
+    async def get_display_name(self, user_id: str) -> str:
+        """
+        获取用户的最佳显示名称。
+        优先级: nickname_api (自定义昵称) > economy_api (游戏内昵称) > user_id
+        """
+        # 1. 尝试从 nickname_api 获取最高优先级的自定义昵称
+        if self.nickname_api:
+            try:
+                name = await self.nickname_api.get_nickname(user_id)
+                if name:
+                    return name
+            except Exception as e:
+                logger.warning(f"调用 nickname_api.get_nickname 时出错: {e}")
+
+        # 2. 如果没有，尝试从 economy_api 获取游戏内昵称
+        if self.economy_api:
+            try:
+                profile = await self.economy_api.get_user_profile(user_id)
+                if profile and profile.get('nickname'):
+                    return profile['nickname']
+            except Exception as e:
+                logger.warning(f"调用 economy_api.get_user_profile 时出错: {e}")
+        
+        # 3. 如果都没有，直接返回 user_id 作为最后的保障
+        return user_id
+
+    async def get_stock_details_for_api(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """为 Web API 准备一支股票的详细数据。"""
+        stock = await self.find_stock(identifier)
+        if not stock:
+            return None
+
+        # --- 计算24小时数据 ---
+        k_history_24h = list(stock.kline_history)[-288:] # 最近24小时 (288 * 5分钟)
+        
+        day_open = k_history_24h[0]['open'] if k_history_24h else stock.previous_close
+        day_close = stock.current_price
+        
+        change = day_close - day_open
+        change_percent = (change / day_open) * 100 if day_open > 0 else 0
+        
+        # --- 获取趋势文本 ---
+        trend_map = {
+            "BULLISH": "看涨",
+            "BEARISH": "看跌",
+            "NEUTRAL": "盘整"
+        }
+        trend_text = trend_map.get(stock.intraday_trend.name, "未知")
+
+        # --- 获取股票编号 ---
+        stock_index = -1
+        try:
+            sorted_stocks = sorted(self.stocks.values(), key=lambda s: s.stock_id)
+            stock_index = sorted_stocks.index(stock) + 1
+        except ValueError:
+            pass # 找不到就算了
+
+        return {
+            "index": stock_index,
+            "stock_id": stock.stock_id,
+            "name": stock.name,
+            "current_price": round(stock.current_price, 2),
+            "change": round(change, 2),
+            "change_percent": round(change_percent, 2),
+            "day_open": round(day_open, 2),
+            "day_close": round(day_close, 2),
+            "short_term_trend": trend_text,
+            "kline_data_24h": k_history_24h
+        }
+
     async def get_user_total_asset(self, user_id: str) -> Dict[str, Any]:
         """
         计算单个用户的总资产详情 (V3 - 完全使用db_manager)

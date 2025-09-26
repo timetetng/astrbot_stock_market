@@ -3,8 +3,11 @@
 import json
 import jwt
 import random
+import time
+import re  # <--- 1. 引入 re 模块
+from collections import deque
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Deque
 
 import aiohttp_jinja2
 from aiohttp import web
@@ -17,14 +20,80 @@ from .utils import jwt_required, generate_user_hash, pwd_context
 if TYPE_CHECKING:
     from .main import StockMarketRefactored
 
+@web.middleware
+async def rate_limit_middleware(request: web.Request, handler):
+    """
+    一个原生的 aiohttp 速率限制中间件 (升级版：支持正则表达式路径匹配)。
+    """
+    server_instance = request.app['server_instance']
+    
+    # 2. 将 'startswith' 修改为 're.match' 以支持更精确的规则
+    for rule in server_instance.rate_limit_rules:
+        if re.match(rule['path_regex'], request.path):
+            key = rule['get_key_func'](request)
+            limit = rule['limit']
+            period = rule['period']
+            
+            current_time = time.monotonic()
+            timestamps: Deque[float] = server_instance.rate_limit_storage.setdefault(key, deque())
+            
+            while timestamps and timestamps[0] <= current_time - period:
+                timestamps.popleft()
+            
+            if len(timestamps) >= limit:
+                logger.warning(f"速率限制触发！Key: '{key}', Path: '{request.path}', Rule: {rule['path_regex']}")
+                return web.Response(
+                    status=429,
+                    text=json.dumps({"error": "Too Many Requests", "message": "Rate limit exceeded."}),
+                    content_type="application/json"
+                )
+            
+            timestamps.append(current_time)
+            break
+            
+    return await handler(request)
+
 class WebServer:
+    def _get_ip_key(self, request: web.Request) -> str:
+        """根据请求者的 IP 地址生成 Key"""
+        return request.remote or "127.0.0.1"
+
+    def _get_user_key(self, request: web.Request) -> str:
+        """优先根据已登录用户的ID进行限速，否则根据IP"""
+        if "jwt_payload" in request and "sub" in request["jwt_payload"]:
+            return str(request["jwt_payload"]["sub"])
+        return self._get_ip_key(request)
+
     def __init__(self, plugin: "StockMarketRefactored"):
         logger.info(">>> [DIAGNOSTIC] A. WebServer __init__ starts.")
         self.plugin = plugin
-        self.app = web.Application()
+        
+        self.app = web.Application(middlewares=[rate_limit_middleware])
+        self.app['server_instance'] = self
+
+        self.rate_limit_storage: Dict[str, Deque[float]] = {}
+        
+        # ▼▼▼ 3. 更新限速规则列表，增加K线专项规则 ▼▼▼
+        # 规则的顺序很重要，会从上到下依次匹配，第一个匹配成功即生效。
+        self.rate_limit_rules = [
+            # 规则1 (最严格): 认证接口，防止暴力破解 (10次/分钟/IP)
+            {'path_regex': r'^/api/auth/.*', 'limit': 10, 'period': 60, 'get_key_func': self._get_ip_key},
+            
+            # 规则2 (针对交易): 防止高频交易 (30次/分钟/用户)
+            {'path_regex': r'^/api/v1/trade/.*', 'limit': 30, 'period': 60, 'get_key_func': self._get_user_key},
+            
+            # 【【【新增规则】】】
+            # 规则3 (K线详情): 限制大流量包的请求频率 (5次/分钟/IP)
+            # 这个正则表达式精确匹配 /api/v1/stock/任意字符/details
+            {'path_regex': r'^/api/v1/stock/[^/]+/details$', 'limit': 5, 'period': 60, 'get_key_func': self._get_ip_key},
+            
+            # 规则4 (通用): 保护所有其他API接口，例如轻量级的价格查询 (60次/分钟/IP)
+            {'path_regex': r'^/api/.*', 'limit': 60, 'period': 60, 'get_key_func': self._get_ip_key}
+        ]
+        # ▲▲▲ 规则列表更新结束 ▲▲▲
+        
         self.runner = None
         self._setup_jinja_and_routes()
-        logger.info(">>> [DIAGNOSTIC] B. WebServer __init__ finished.")
 
     def _setup_jinja_and_routes(self):
         """配置Jinja2环境和所有Web路由。"""
@@ -33,25 +102,28 @@ class WebServer:
             """一个更强大的 tojson 过滤器，用于模板渲染。"""
             return json.dumps(obj, ensure_ascii=False)
 
-        # 【最终修正】我们不再手动创建 jinja_env，而是将所有参数直接传递给 setup 函数
         aiohttp_jinja2.setup(
             self.app,
             loader=FileSystemLoader(TEMPLATES_DIR),
             autoescape=select_autoescape(['html', 'xml']),
             enable_async=True,
             context_processors=[aiohttp_jinja2.request_processor],
-            filters={'tojson': tojson_filter}  # <--- 像这样传入自定义过滤器
+            filters={'tojson': tojson_filter}
         )
         
-        # --- 后续的路由配置完全不变 ---
         self.app.router.add_static('/static/', path=STATIC_DIR, name='static')
         
+        # --- 子应用的路由定义保持完全不变 ---
         api_v1 = web.Application()
         api_v1.router.add_get('/stock/{stock_id}', self._api_get_stock_info)
+        api_v1.router.add_get('/stock/{identifier}/details', self._api_get_stock_details)
         api_v1.router.add_get('/stocks', self._api_get_all_stocks)
         api_v1.router.add_get('/portfolio', self._api_get_user_portfolio)
         api_v1.router.add_post('/trade/buy', self._api_trade_buy)
         api_v1.router.add_post('/trade/sell', self._api_trade_sell)
+        api_v1.router.add_post('/trade/buy_all_in', self._api_trade_buy_all_in)
+        api_v1.router.add_post('/trade/sell_all_stock', self._api_trade_sell_all_stock)
+        api_v1.router.add_post('/trade/sell_all_portfolio', self._api_trade_sell_all_portfolio)
         api_v1.router.add_get('/ranking', self._api_get_ranking)
         self.app.add_subapp('/api/v1', api_v1)
 
@@ -69,6 +141,7 @@ class WebServer:
             return web.HTTPFound('/static/favicon.png')
 
         self.app.router.add_get('/favicon.ico', handle_favicon)
+
     async def start(self):
         """启动Web服务器。"""
         logger.info(">>> [DIAGNOSTIC] C. WebServer start() starts.")
@@ -152,10 +225,47 @@ class WebServer:
             'previous_close': stock.previous_close, 'industry': stock.industry, 'volatility': stock.volatility
         })
 
-    async def _api_get_all_stocks(self, request: web.Request):
-        stock_list = [{'stock_id': s.stock_id, 'name': s.name, 'current_price': s.current_price}
-                      for s in sorted(self.plugin.stocks.values(), key=lambda x: x.stock_id)]
-        return web.json_response(stock_list)
+    async def _api_get_stock_details(self, request: web.Request):
+        """[API][Public] 获取单支股票的详细信息。"""
+        identifier = request.match_info.get('identifier', "")
+        stock_details = await self.plugin.get_stock_details_for_api(identifier)
+        if not stock_details:
+            return web.json_response({'error': f'Stock with identifier "{identifier}" not found'}, status=404)
+        return web.json_response(stock_details)
+
+    @jwt_required
+    async def _api_trade_buy_all_in(self, request: web.Request):
+        """[API][Private] 执行梭哈买入操作。"""
+        try:
+            data = await request.json()
+            user_id = request['jwt_payload']['sub']
+            identifier = data['stock_identifier']
+            success, message = await self.plugin.trading_manager.perform_buy_all_in(user_id, identifier)
+            status = 200 if success else 400
+            return web.json_response({'success': success, 'message': message}, status=status)
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return web.json_response({'error': f'无效的请求体: {e}. 需要 {"stock_identifier": "..."}'}, status=400)
+
+    @jwt_required
+    async def _api_trade_sell_all_stock(self, request: web.Request):
+        """[API][Private] 执行全抛单支股票的操作。"""
+        try:
+            data = await request.json()
+            user_id = request['jwt_payload']['sub']
+            identifier = data['stock_identifier']
+            success, message = await self.plugin.trading_manager.perform_sell_all_for_stock(user_id, identifier)
+            status = 200 if success else 400
+            return web.json_response({'success': success, 'message': message}, status=status)
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return web.json_response({'error': f'无效的请求体: {e}. 需要 {"stock_identifier": "..."}'}, status=400)
+
+    @jwt_required
+    async def _api_trade_sell_all_portfolio(self, request: web.Request):
+        """[API][Private] 执行清仓操作。"""
+        user_id = request['jwt_payload']['sub']
+        success, message = await self.plugin.trading_manager.perform_sell_all_portfolio(user_id)
+        status = 200 if success else 400
+        return web.json_response({'success': success, 'message': message}, status=status)
 
     @jwt_required
     async def _api_get_user_portfolio(self, request: web.Request):
@@ -169,6 +279,12 @@ class WebServer:
             user_id_for_log = request.get('jwt_payload', {}).get('sub', '未知用户')
             logger.error(f"获取用户 {user_id_for_log} 持仓时出错: {e}", exc_info=True)
             return web.json_response({'error': '获取持仓信息时发生内部错误'}, status=500)
+
+    async def _api_get_all_stocks(self, request: web.Request):
+        stock_list = [{'stock_id': s.stock_id, 'name': s.name, 'current_price': s.current_price}
+                      for s in sorted(self.plugin.stocks.values(), key=lambda x: x.stock_id)]
+        return web.json_response(stock_list)
+
 
     async def _api_get_ranking(self, request: web.Request):
         limit = int(request.query.get('limit', 10))
