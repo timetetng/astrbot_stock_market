@@ -9,10 +9,9 @@
 所有 API 的请求都应基于以下 URL：
 
 ```
-http://your-server-ip:port
+https://stock.leewater.online
 ```
 
-> **注意**: 请将 `your-server-ip:port` 替换为你的服务器实际的 IP 地址和端口。
 
 ### 1.2. 认证机制
 
@@ -71,7 +70,7 @@ http://your-server-ip:port
     \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
 
     ```bash
-    curl -X POST "http://your-server-ip:port/api/auth/login" \
+    curl -X POST "https://stock.leewater.online/api/auth/login" \
          -H "Content-Type: application/json" \
          -d '{"user_id": "TimeXingjian", "password": "your_password"}'
     ```
@@ -84,7 +83,7 @@ http://your-server-ip:port
     ```python
     import requests
 
-    BASE_URL = "http://your-server-ip:port"
+    BASE_URL = "https://stock.leewater.online"
     auth_payload = {
         "user_id": "TimeXingjian",
         "password": "your_password"
@@ -140,7 +139,7 @@ http://your-server-ip:port
     \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
 
     ```bash
-    curl &quot;http://your-server-ip:port/api/v1/stocks&quot;
+    curl &quot;https://stock.leewater.online/api/v1/stocks&quot;
     ```
 
     \</details\>
@@ -150,7 +149,7 @@ http://your-server-ip:port
 
     ```python
     import requests
-    response = requests.get(&quot;http://your-server-ip:port/api/v1/stocks&quot;)
+    response = requests.get(&quot;https://stock.leewater.online/api/v1/stocks&quot;)
     print(response.json())
     ```
 
@@ -178,7 +177,7 @@ http://your-server-ip:port
     \<details\>
     \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
     ```bash
-    curl &quot;http://your-server-ip:port/api/v1/stock/CY&quot;
+    curl &quot;https://stock.leewater.online/api/v1/stock/CY&quot;
     ```
     \</details\>
 
@@ -216,7 +215,7 @@ http://your-server-ip:port
     \<details\>
     \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
     ```bash
-    curl &quot;http://your-server-ip:port/api/v1/stock/CY/details&quot;
+    curl &quot;https://stock.leewater.online/api/v1/stock/CY/details&quot;
     ```
     \</details\>
 
@@ -232,7 +231,7 @@ http://your-server-ip:port
     \<details\>
     \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
     ```bash
-    curl &quot;http://your-server-ip:port/api/v1/ranking?limit=3&quot;
+    curl &quot;https://stock.leewater.online/api/v1/ranking?limit=3&quot;
     ```
     \</details\>
 
@@ -284,7 +283,7 @@ http://your-server-ip:port
 
     ```bash
     TOKEN=&quot;your_access_token_here&quot;
-    curl -H &quot;Authorization: Bearer $TOKEN&quot; &quot;http://your-server-ip:port/api/v1/portfolio&quot;
+    curl -H &quot;Authorization: Bearer $TOKEN&quot; &quot;https://stock.leewater.online/api/v1/portfolio&quot;
     ```
 
     \</details\>
@@ -296,7 +295,7 @@ http://your-server-ip:port
     import requests
     # 假设 auth_headers 已通过登录获取
     # auth_headers = {&quot;Authorization&quot;: &quot;Bearer ...&quot;}
-    response = requests.get(&quot;http://your-server-ip:port/api/v1/portfolio&quot;, headers=auth_headers)
+    response = requests.get(&quot;https://stock.leewater.online/api/v1/portfolio&quot;, headers=auth_headers)
     print(response.json())
     ```
 
@@ -328,7 +327,7 @@ http://your-server-ip:port
     \<summary\>\<strong\>Python 示例\</strong\>\</summary\>
     ```python
     payload = {&quot;stock_id&quot;: &quot;CY&quot;, &quot;quantity&quot;: 100}
-    response = requests.post(&quot;http://your-server-ip:port/api/v1/trade/buy&quot;, headers=auth_headers, json=payload)
+    response = requests.post(&quot;https://stock.leewater.online/api/v1/trade/buy&quot;, headers=auth_headers, json=payload)
     print(response.json())
     ```
     \</details\>
@@ -378,7 +377,7 @@ http://your-server-ip:port
 | 接口类型 | 限制路径 (正则表达式) | 限制额度 | 限制维度 |
 | :--- | :--- | :--- | :--- |
 | **认证接口** | `^/api/auth/.*` | 10 次 / 分钟 | 按 IP 地址 |
-| **交易接口** | `^/api/v1/trade/.*` | 20 次 / 分钟 | 按用户 ID |
+| **交易接口** | `^/api/v1/trade/.*` | 30 次 / 分钟 | 按用户 ID |
 | **K线详情** | `^/api/v1/stock/[^/]+/details$` | 5 次 / 分钟 | 按 IP 地址 |
 | **通用API** | `^/api/.*` | 60 次 / 分钟 | 按 IP 地址 |
 
