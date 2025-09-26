@@ -12,7 +12,6 @@
 https://stock.leewater.online
 ```
 
-
 ### 1.2. 认证机制
 
 本 API 对涉及用户个人数据和交易操作的接口采用 `JWT Bearer Token` 认证。
@@ -66,8 +65,7 @@ https://stock.leewater.online
 
   * **示例**
 
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+    **cURL 示例**
 
     ```bash
     curl -X POST "https://stock.leewater.online/api/auth/login" \
@@ -75,10 +73,7 @@ https://stock.leewater.online
          -d '{"user_id": "TimeXingjian", "password": "your_password"}'
     ```
 
-    \</details\>
-
-    \<details\>
-    \<summary\>\<strong\>Python 示例\</strong\>\</summary\>
+    **Python 示例**
 
     ```python
     import requests
@@ -101,8 +96,6 @@ https://stock.leewater.online
     else:
         print(f"登录失败: {response.json()}")
     ```
-
-    \</details\>
 
 -----
 
@@ -135,34 +128,32 @@ https://stock.leewater.online
 
   * **示例**
 
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+    **cURL 示例**
 
     ```bash
-    curl &quot;https://stock.leewater.online/api/v1/stocks&quot;
+    curl "https://stock.leewater.online/api/v1/stocks"
     ```
 
-    \</details\>
-
-    \<details\>
-    \<summary\>\<strong\>Python 示例\</strong\>\</summary\>
+    **Python 示例**
 
     ```python
     import requests
-    response = requests.get(&quot;https://stock.leewater.online/api/v1/stocks&quot;)
+    response = requests.get("https://stock.leewater.online/api/v1/stocks")
     print(response.json())
     ```
-
-    \</details\>
 
 ### 3.2. 获取股票基本信息 (轻量级)
 
 **推荐用于快速查询实时价格。**
 
   * **Endpoint**: `GET /api/v1/stock/{stock_id}`
+
   * **路径参数 (Path Parameter)**:
+
       * `stock_id` (string, required): 股票的唯一代码，例如 `CY`。
+
   * **成功响应 (200 OK)**:
+
     ```json
     {
       "stock_id": "CY",
@@ -173,22 +164,27 @@ https://stock.leewater.online
       "volatility": 0.02
     }
     ```
+
   * **示例**
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+
+    **cURL 示例**
+
     ```bash
-    curl &quot;https://stock.leewater.online/api/v1/stock/CY&quot;
+    curl "https://stock.leewater.online/api/v1/stock/CY"
     ```
-    \</details\>
 
 ### 3.3. 获取股票详细信息 (含K线)
 
 获取单支股票的完整详细信息，包括用于绘制图表的24小时K线数据。**此接口数据包较大，请勿高频调用。**
 
   * **Endpoint**: `GET /api/v1/stock/{identifier}/details`
+
   * **路径参数 (Path Parameter)**:
+
       * `identifier` (string, required): 股票的标识符，可以是代码 (`CY`)、名称 (`晨宇科技`) 或编号 (`1`)。
+
   * **成功响应 (200 OK)**:
+
     ```json
     {
       "index": 1,
@@ -211,29 +207,34 @@ https://stock.leewater.online
       ]
     }
     ```
+
   * **示例**
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+
+    **cURL 示例**
+
     ```bash
-    curl &quot;https://stock.leewater.online/api/v1/stock/CY/details&quot;
+    curl "https://stock.leewater.online/api/v1/stock/CY/details"
     ```
-    \</details\>
 
 ### 3.4. 获取总资产排行榜
 
 获取全服用户的总资产排名。
 
   * **Endpoint**: `GET /api/v1/ranking`
+
   * **查询参数 (Query Parameter)**:
+
       * `limit` (integer, optional, default: 10): 返回排行的长度。
+
   * **成功响应 (200 OK)**: 响应为一个包含用户资产详情对象的数组。
+
   * **示例**
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+
+    **cURL 示例**
+
     ```bash
-    curl &quot;https://stock.leewater.online/api/v1/ranking?limit=3&quot;
+    curl "https://stock.leewater.online/api/v1/ranking?limit=3"
     ```
-    \</details\>
 
 -----
 
@@ -278,28 +279,22 @@ https://stock.leewater.online
 
   * **示例**
 
-    \<details\>
-    \<summary\>\<strong\>cURL 示例\</strong\>\</summary\>
+    **cURL 示例**
 
     ```bash
-    TOKEN=&quot;your_access_token_here&quot;
-    curl -H &quot;Authorization: Bearer $TOKEN&quot; &quot;https://stock.leewater.online/api/v1/portfolio&quot;
+    TOKEN="your_access_token_here"
+    curl -H "Authorization: Bearer $TOKEN" "https://stock.leewater.online/api/v1/portfolio"
     ```
 
-    \</details\>
-
-    \<details\>
-    \<summary\>\<strong\>Python 示例\</strong\>\</summary\>
+    **Python 示例**
 
     ```python
     import requests
     # 假设 auth_headers 已通过登录获取
-    # auth_headers = {&quot;Authorization&quot;: &quot;Bearer ...&quot;}
-    response = requests.get(&quot;https://stock.leewater.online/api/v1/portfolio&quot;, headers=auth_headers)
+    # auth_headers = {"Authorization": "Bearer ..."}
+    response = requests.get("https://stock.leewater.online/api/v1/portfolio", headers=auth_headers)
     print(response.json())
     ```
-
-    \</details\>
 
 ### 4.2. 交易接口
 
@@ -315,22 +310,25 @@ https://stock.leewater.online
 #### 4.2.1. 买入股票
 
   * **Endpoint**: `POST /api/v1/trade/buy`
+
   * **请求体 (Request Body)**:
+
     ```json
     {
       "stock_id": "CY",
       "quantity": 100
     }
     ```
+
   * **示例**
-    \<details\>
-    \<summary\>\<strong\>Python 示例\</strong\>\</summary\>
+
+    **Python 示例**
+
     ```python
-    payload = {&quot;stock_id&quot;: &quot;CY&quot;, &quot;quantity&quot;: 100}
-    response = requests.post(&quot;https://stock.leewater.online/api/v1/trade/buy&quot;, headers=auth_headers, json=payload)
+    payload = {"stock_id": "CY", "quantity": 100}
+    response = requests.post("https://stock.leewater.online/api/v1/trade/buy", headers=auth_headers, json=payload)
     print(response.json())
     ```
-    \</details\>
 
 #### 4.2.2. 卖出股票
 

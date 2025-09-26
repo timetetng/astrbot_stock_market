@@ -11,8 +11,8 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 # --- Web服务配置 ---
 # !!! 重要：请将这里的 IP 地址换成您服务器的公网IP !!!
-SERVER_PUBLIC_IP = ""
-SERVER_PORT = 
+SERVER_PUBLIC_IP = "localhost"
+SERVER_PORT = 30005
 SERVER_BASE_URL = f"http://{SERVER_PUBLIC_IP}:{SERVER_PORT}"
 
 # --- API 安全与JWT认证 ---
