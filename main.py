@@ -105,7 +105,7 @@ def generate_user_hash(user_id: str) -> str:
 # ----------------------------
 # 全局设置与常量
 # ----------------------------
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "plugins_db", "stock_market_v2")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "plugins_db", "stock_market")
 os.makedirs(DATA_DIR, exist_ok=True)
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 jinja_env = Environment(loader=FileSystemLoader(TEMPLATES_DIR), autoescape=True, enable_async=True)
@@ -353,13 +353,13 @@ class VirtualStock:
 # ----------------------------
 # 主插件类
 # ----------------------------
-@register("stock_market_v2", "timetetng", "一个功能重构的模拟炒股插件", "3.0.0")
+@register("stock_market", "timetetng", "一个功能重构的模拟炒股插件", "3.0.0")
 class StockMarketRefactored(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.stocks: Dict[str, VirtualStock] = {}
         self.playwright_browser: Optional[Browser] = None
-        self.db_path = os.path.join(DATA_DIR, "stock_market_v2.db")
+        self.db_path = os.path.join(DATA_DIR, "stock_market.db")
         # V5.3 算法状态
         self.market_simulator = MarketSimulator()
         self.last_update_date: Optional[date] = None
