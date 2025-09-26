@@ -1,0 +1,191 @@
+# stock_market/simulation.py
+
+import asyncio
+import random
+import math
+from datetime import datetime, date
+from typing import TYPE_CHECKING, Optional
+
+from astrbot.api import logger
+from astrbot.api.event import MessageChain
+
+from .models import VirtualStock, DailyScript, MarketCycle, DailyBias, Trend
+from .config import NATIVE_EVENT_PROBABILITY_PER_TICK, NATIVE_STOCK_RANDOM_EVENTS, INTRINSIC_VALUE_PRESSURE_FACTOR
+
+if TYPE_CHECKING:
+    from .main import StockMarketRefactored
+
+class MarketSimulation:
+    def __init__(self, plugin: "StockMarketRefactored"):
+        self.plugin = plugin
+        self.task: Optional[asyncio.Task] = None
+
+    def start(self):
+        """启动价格更新循环任务。"""
+        if not self.task or self.task.done():
+            self.task = asyncio.create_task(self._update_stock_prices_loop())
+            logger.info("股票价格更新循环已启动。")
+
+    def stop(self):
+        """停止价格更新循环任务。"""
+        if self.task and not self.task.done():
+            self.task.cancel()
+            logger.info("股票价格更新循环已停止。")
+            
+    def _generate_daily_script(self, stock: VirtualStock, current_date: date) -> DailyScript:
+        """为单支股票生成每日剧本 (V5.3 算法)。"""
+        momentum = stock.get_momentum()
+        last_close = stock.get_last_day_close()
+        valuation_ratio = last_close / stock.fundamental_value if stock.fundamental_value > 0 else 1.0
+
+        mean_reversion_pressure = 1.0
+        if valuation_ratio < 0.7: mean_reversion_pressure = 1 / max(valuation_ratio, 0.1)
+        elif valuation_ratio > 1.5: mean_reversion_pressure = valuation_ratio
+
+        bias_weights = [1.0, 1.0, 1.0]
+        if self.plugin.market_simulator.cycle == MarketCycle.BULL_MARKET: bias_weights[0] *= 2.0
+        elif self.plugin.market_simulator.cycle == MarketCycle.BEAR_MARKET: bias_weights[2] *= 2.0
+        if momentum > 0: bias_weights[0] *= (1 + momentum * 1.5)
+        elif momentum < 0: bias_weights[2] *= (1 - abs(momentum) * 1.5)
+        if valuation_ratio < 0.7: bias_weights[0] *= mean_reversion_pressure
+        elif valuation_ratio > 1.5: bias_weights[2] *= mean_reversion_pressure
+        bias = random.choices([DailyBias.UP, DailyBias.SIDEWAYS, DailyBias.DOWN], weights=bias_weights, k=1)[0]
+
+        base_range = stock.volatility * random.uniform(0.7, 1.5)
+        if self.plugin.market_simulator.volatility_regime.value == "高波动期": base_range *= 1.7
+        if bias != DailyBias.SIDEWAYS: base_range *= 1.3
+
+        price_change = last_close * base_range * random.uniform(0.4, 1.0)
+        if bias == DailyBias.UP: target_close = last_close + price_change
+        elif bias == DailyBias.DOWN: target_close = last_close - price_change
+        else: target_close = last_close + (price_change / 2 * random.choice([-1, 1]))
+
+        return DailyScript(date=current_date, bias=bias, expected_range_factor=base_range, target_close=max(0.01, target_close))
+
+    async def _handle_native_stock_random_event(self, stock: VirtualStock) -> Optional[str]:
+        """处理原生虚拟股票的随机事件。"""
+        if random.random() > NATIVE_EVENT_PROBABILITY_PER_TICK:
+            return None
+
+        eligible_events = [e for e in NATIVE_STOCK_RANDOM_EVENTS if e.get("industry") is None or e.get("industry") == stock.industry]
+        if not eligible_events:
+            return None
+
+        event_weights = [e.get('weight', 1) for e in eligible_events]
+        chosen_event = random.choices(eligible_events, weights=event_weights, k=1)[0]
+
+        if chosen_event.get("effect_type") == 'price_change_percent':
+            value_min, value_max = chosen_event['value_range']
+            percent_change = round(random.uniform(value_min, value_max), 4)
+            new_price = round(stock.current_price * (1 + percent_change), 2)
+            stock.current_price = max(0.01, new_price)
+            return chosen_event['message'].format(stock_name=stock.name, stock_id=stock.stock_id, value=percent_change)
+        
+        return None
+
+    async def _update_stock_prices_loop(self):
+        """后台任务循环，更新股票价格。"""
+        while True:
+            try:
+                new_status, wait_seconds = self.plugin.get_market_status_and_wait()
+                if new_status != self.plugin.market_status:
+                    logger.info(f"市场状态变更: {self.plugin.market_status.value} -> {new_status.value}")
+                    self.plugin.market_status = new_status
+                
+                if self.plugin.market_status.value != "交易中":
+                    if wait_seconds > 0: await asyncio.sleep(wait_seconds)
+                    continue
+
+                now = datetime.now()
+                today = now.date()
+                if self.plugin.last_update_date != today:
+                    logger.info(f"新交易日 ({today}) 开盘，正在初始化市场...")
+                    self.plugin.market_simulator.update(logger)
+                    for stock in self.plugin.stocks.values():
+                        if self.plugin.last_update_date:
+                            stock.previous_close = stock.current_price
+                            stock.daily_close_history.append(stock.current_price)
+                        else:
+                            stock.previous_close = stock.current_price
+                        
+                        stock.update_fundamental_value()
+                        stock.daily_script = self._generate_daily_script(stock, today)
+                    self.plugin.last_update_date = today
+
+                db_updates = []
+                current_interval_minute = (now.minute // 5) * 5
+                five_minute_start = now.replace(minute=current_interval_minute, second=0, microsecond=0)
+
+                for stock in self.plugin.stocks.values():
+                    script = stock.daily_script
+                    if not script: continue
+
+                    open_price = stock.current_price
+                    event_message = None
+
+                    if not stock.is_listed_company:
+                        event_message = await self._handle_native_stock_random_event(stock)
+
+                    if event_message:
+                        logger.info(f"[随机市场事件] {event_message}")
+                        message_chain = MessageChain().message(f"【市场快讯】\n{event_message}")
+                        subscribers_copy = list(self.plugin.broadcast_subscribers)
+                        for umo in subscribers_copy:
+                            try:
+                                await self.plugin.context.send_message(umo, message_chain)
+                            except Exception as e:
+                                logger.error(f"向订阅者 {umo} 推送消息失败: {e}")
+                                if umo in self.plugin.broadcast_subscribers:
+                                    self.plugin.broadcast_subscribers.remove(umo)
+                        
+                        close_price = stock.current_price
+                        high_price, low_price = (max(open_price, close_price), min(open_price, close_price))
+                    else:
+                        TREND_BREAK_CHANCE = 0.20
+                        if stock.intraday_trend_duration <= 0 or random.random() < TREND_BREAK_CHANCE:
+                            weights = [0.3, 0.4, 0.3]
+                            if script.bias == DailyBias.UP: weights = [0.5, 0.3, 0.2]
+                            elif script.bias == DailyBias.DOWN: weights = [0.2, 0.3, 0.5]
+                            stock.intraday_trend = random.choices([Trend.BULLISH, Trend.NEUTRAL, Trend.BEARISH], weights=weights, k=1)[0]
+                            stock.intraday_trend_duration = random.randint(4, 12)
+                        else:
+                            stock.intraday_trend_duration -= 1
+
+                        effective_volatility = script.expected_range_factor / math.sqrt(288) * 2.2
+                        trend_influence = stock.intraday_trend.value * (open_price * effective_volatility) * random.uniform(0.5, 1.5)
+                        random_walk = open_price * effective_volatility * random.normalvariate(0, 1)
+
+                        short_term_reversion_force = 0
+                        if len(stock.price_history) >= 5:
+                            sma5 = sum(list(stock.price_history)[-5:]) / 5
+                            short_term_reversion_force = -(open_price - sma5) * 0.15
+
+                        intraday_anchor_force = (script.target_close - open_price) / 288 * 0.05
+                        pressure_influence = stock.market_pressure * 0.01
+                        stock.market_pressure *= 0.95
+                        total_change = trend_influence + random_walk + short_term_reversion_force + intraday_anchor_force + pressure_influence
+
+                        close_price = round(max(0.01, open_price + total_change), 2)
+                        absolute_volatility_base = open_price * (script.expected_range_factor / math.sqrt(288))
+                        high_price = round(max(open_price, close_price) + random.uniform(0, absolute_volatility_base * 0.8), 2)
+                        low_price = round(max(0.01, min(open_price, close_price) - random.uniform(0, absolute_volatility_base * 0.8)), 2)
+                        stock.current_price = close_price
+                    
+                    stock.price_history.append(stock.current_price)
+                    kline_entry = {"date": five_minute_start.isoformat(), "open": open_price, "high": high_price, "low": low_price, "close": stock.current_price}
+                    stock.kline_history.append(kline_entry)
+                    db_updates.append({"stock_id": stock.stock_id, "current_price": stock.current_price, "kline": kline_entry, "market_pressure": stock.market_pressure})
+
+                if self.plugin.db_manager:
+                    await self.plugin.db_manager.batch_update_stock_data(db_updates)
+
+                now_after_update = datetime.now()
+                seconds_to_wait = (5 - (now_after_update.minute % 5)) * 60 - now_after_update.second
+                await asyncio.sleep(max(1, seconds_to_wait))
+
+            except asyncio.CancelledError:
+                logger.info("股票价格更新任务被取消。")
+                break
+            except Exception as e:
+                logger.error(f"股票价格更新任务出现严重错误: {e}", exc_info=True)
+                await asyncio.sleep(60)

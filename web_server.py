@@ -1,0 +1,309 @@
+# stock_market/web_server.py
+
+import json
+import jwt
+import random
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
+
+import aiohttp_jinja2
+from aiohttp import web
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from astrbot.api import logger
+from .config import TEMPLATES_DIR, STATIC_DIR, SERVER_PORT, SERVER_BASE_URL, JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES
+from .utils import jwt_required, generate_user_hash, pwd_context
+
+if TYPE_CHECKING:
+    from .main import StockMarketRefactored
+
+class WebServer:
+    def __init__(self, plugin: "StockMarketRefactored"):
+        logger.info(">>> [DIAGNOSTIC] A. WebServer __init__ starts.")
+        self.plugin = plugin
+        self.app = web.Application()
+        self.runner = None
+        self._setup_jinja_and_routes()
+        logger.info(">>> [DIAGNOSTIC] B. WebServer __init__ finished.")
+
+    def _setup_jinja_and_routes(self):
+        """配置Jinja2环境和所有Web路由。"""
+        
+        def tojson_filter(obj):
+            """一个更强大的 tojson 过滤器，用于模板渲染。"""
+            return json.dumps(obj, ensure_ascii=False)
+
+        # 【最终修正】我们不再手动创建 jinja_env，而是将所有参数直接传递给 setup 函数
+        aiohttp_jinja2.setup(
+            self.app,
+            loader=FileSystemLoader(TEMPLATES_DIR),
+            autoescape=select_autoescape(['html', 'xml']),
+            enable_async=True,
+            context_processors=[aiohttp_jinja2.request_processor],
+            filters={'tojson': tojson_filter}  # <--- 像这样传入自定义过滤器
+        )
+        
+        # --- 后续的路由配置完全不变 ---
+        self.app.router.add_static('/static/', path=STATIC_DIR, name='static')
+        
+        api_v1 = web.Application()
+        api_v1.router.add_get('/stock/{stock_id}', self._api_get_stock_info)
+        api_v1.router.add_get('/stocks', self._api_get_all_stocks)
+        api_v1.router.add_get('/portfolio', self._api_get_user_portfolio)
+        api_v1.router.add_post('/trade/buy', self._api_trade_buy)
+        api_v1.router.add_post('/trade/sell', self._api_trade_sell)
+        api_v1.router.add_get('/ranking', self._api_get_ranking)
+        self.app.add_subapp('/api/v1', api_v1)
+
+        auth_app = web.Application()
+        auth_app.router.add_post('/register', self._api_auth_register)
+        auth_app.router.add_post('/login', self._api_auth_login)
+        auth_app.router.add_post('/forgot-password', self._api_auth_forgot_password)
+        auth_app.router.add_post('/reset-password', self._api_auth_reset_password)
+        self.app.add_subapp('/api/auth', auth_app)
+
+        self.app.router.add_get('/charts/{user_hash}', self._handle_user_charts_page)
+        self.app.router.add_get('/api/kline/{stock_id}', self._handle_kline_api)
+        self.app.router.add_get('/api/get_user_hash', self._handle_get_user_hash)
+        async def handle_favicon(request):
+            return web.HTTPFound('/static/favicon.png')
+
+        self.app.router.add_get('/favicon.ico', handle_favicon)
+    async def start(self):
+        """启动Web服务器。"""
+        logger.info(">>> [DIAGNOSTIC] C. WebServer start() starts.")
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, '0.0.0.0', SERVER_PORT)
+        await site.start()
+        logger.info(f"Web服务及API已在 {SERVER_BASE_URL} 上启动。")
+        logger.info(">>> [DIAGNOSTIC] D. WebServer start() finished.")
+
+    async def stop(self):
+        """停止Web服务器。"""
+        if self.runner:
+            await self.runner.cleanup()
+            logger.info("Web服务已关闭。")
+
+    # --- 所有路由处理函数的代码保持不变，这里为了完整性全部包含 ---
+
+    @aiohttp_jinja2.template('charts_page.html')
+    async def _handle_user_charts_page(self, request: web.Request):
+        user_hash = request.match_info.get('user_hash')
+        stocks_list = sorted([{'stock_id': s.stock_id, 'name': s.name} for s in self.plugin.stocks.values()], key=lambda x: x['stock_id'])
+        user_id = None
+        all_user_ids = await self.plugin.db_manager.get_all_user_ids_with_holdings()
+        for uid in all_user_ids:
+            if generate_user_hash(uid) == user_hash:
+                user_id = uid
+                break
+        user_portfolio_data = None
+        if user_id:
+            asset_summary = await self.plugin.get_user_total_asset(user_id)
+            user_portfolio_data = {
+                "user_name": asset_summary.get('user_name', user_id),
+                "holdings": asset_summary.get('holdings_detailed', []),
+                "total": {
+                    "market_value": asset_summary.get('stock_value', 0),
+                    "pnl": asset_summary.get('total_pnl', 0),
+                    "pnl_percent": asset_summary.get('total_pnl_percent', 0),
+                }
+            }
+        return {'stocks': stocks_list, 'user_hash': user_hash, 'user_portfolio_data': user_portfolio_data}
+
+    async def _handle_kline_api(self, request: web.Request):
+        stock_id = request.match_info.get('stock_id', "").upper()
+        user_hash = request.query.get('user_hash')
+        period = request.query.get('period', '1d')
+        stock = await self.plugin.find_stock(stock_id)
+        if not stock or len(stock.kline_history) < 2:
+            return web.json_response({'error': 'not found'}, status=404)
+        now = datetime.now()
+        days_map = {'1d': 1, '7d': 7, '30d': 30}
+        cutoff_time = now - timedelta(days=days_map.get(period, 1))
+        filtered_kline_history = [c for c in stock.kline_history if c.get('date') and datetime.fromisoformat(c['date']) >= cutoff_time]
+        target_user_id = None
+        if user_hash:
+            all_user_ids = await self.plugin.db_manager.get_all_user_ids_with_holdings()
+            for uid in all_user_ids:
+                if generate_user_hash(uid) == user_hash:
+                    target_user_id = uid
+                    break
+        user_holdings = []
+        if target_user_id:
+            asset_info = await self.plugin.get_user_total_asset(target_user_id)
+            for holding in asset_info.get('holdings_detailed', []):
+                if holding['stock_id'] == stock_id:
+                    user_holdings.append({"stock_id": stock_id, "quantity": holding['quantity'], "avg_cost": holding['avg_cost']})
+        return web.json_response({"kline_history": filtered_kline_history, "user_holdings": user_holdings})
+
+    async def _handle_get_user_hash(self, request: web.Request):
+        qq_id = request.query.get('qq_id')
+        if not qq_id or not qq_id.isdigit():
+            return web.json_response({'error': '无效的QQ号'}, status=400)
+        return web.json_response({'user_hash': generate_user_hash(qq_id)})
+
+    async def _api_get_stock_info(self, request: web.Request):
+        stock_id = request.match_info.get('stock_id', "").upper()
+        stock = await self.plugin.find_stock(stock_id)
+        if not stock: return web.json_response({'error': 'Stock not found'}, status=404)
+        return web.json_response({
+            'stock_id': stock.stock_id, 'name': stock.name, 'current_price': stock.current_price,
+            'previous_close': stock.previous_close, 'industry': stock.industry, 'volatility': stock.volatility
+        })
+
+    async def _api_get_all_stocks(self, request: web.Request):
+        stock_list = [{'stock_id': s.stock_id, 'name': s.name, 'current_price': s.current_price}
+                      for s in sorted(self.plugin.stocks.values(), key=lambda x: x.stock_id)]
+        return web.json_response(stock_list)
+
+    @jwt_required
+    async def _api_get_user_portfolio(self, request: web.Request):
+        try:
+            user_id = request['jwt_payload']['sub']
+            display_name = await self.plugin.get_display_name(user_id)
+            asset_summary = await self.plugin.get_user_total_asset(user_id)
+            asset_summary['user_name'] = display_name
+            return web.json_response(asset_summary)
+        except Exception as e:
+            user_id_for_log = request.get('jwt_payload', {}).get('sub', '未知用户')
+            logger.error(f"获取用户 {user_id_for_log} 持仓时出错: {e}", exc_info=True)
+            return web.json_response({'error': '获取持仓信息时发生内部错误'}, status=500)
+
+    async def _api_get_ranking(self, request: web.Request):
+        limit = int(request.query.get('limit', 10))
+        ranking_data = await self.plugin.get_total_asset_ranking(limit)
+        return web.json_response(ranking_data)
+
+    @jwt_required
+    async def _api_trade_buy(self, request: web.Request):
+        try:
+            data = await request.json()
+            user_id, stock_id, quantity = request['jwt_payload']['sub'], data['stock_id'].upper(), int(data['quantity'])
+            success, message = await self.plugin.trading_manager.perform_buy(user_id, stock_id, quantity)
+            status = 200 if success else 400
+            return web.json_response({'success': success, 'message': message}, status=status)
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return web.json_response({'error': f'无效的请求体: {e}'}, status=400)
+
+    @jwt_required
+    async def _api_trade_sell(self, request: web.Request):
+        try:
+            data = await request.json()
+            user_id, stock_id, quantity = request['jwt_payload']['sub'], data['stock_id'].upper(), int(data['quantity'])
+            success, message, _ = await self.plugin.trading_manager.perform_sell(user_id, stock_id, quantity)
+            status = 200 if success else 400
+            return web.json_response({'success': success, 'message': message}, status=status)
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return web.json_response({'error': f'无效的请求体: {e}'}, status=400)
+
+    async def _api_auth_register(self, request: web.Request):
+        try:
+            data = await request.json()
+            login_id, password = data.get('user_id'), data.get('password')
+            if not login_id or not password:
+                return web.json_response({'error': '登录名和密码不能为空'}, status=400)
+
+            # 【修正】使用 db_manager 查询用户是否存在
+            existing_user = await self.plugin.db_manager.get_user_by_login_id(login_id)
+            if existing_user:
+                return web.json_response({'error': '该登录名已被使用'}, status=409)
+
+            code = f"{random.randint(100000, 999999)}"
+            while code in self.plugin.pending_verifications:
+                code = f"{random.randint(100000, 999999)}"
+
+            self.plugin.pending_verifications[code] = {
+                'login_id': login_id, 'password_hash': pwd_context.hash(password), 'timestamp': datetime.now()
+            }
+            return web.json_response({'success': True, 'verification_code': code})
+        except Exception as e:
+            logger.error(f"发起注册时发生错误: {e}", exc_info=True)
+            return web.json_response({'error': '服务器内部错误'}, status=500)
+
+    async def _api_auth_login(self, request: web.Request):
+        try:
+            data = await request.json()
+            login_id, password = data.get('user_id'), data.get('password')
+
+            # 【修正】使用 db_manager 获取用户信息
+            user_record = await self.plugin.db_manager.get_user_by_login_id(login_id)
+
+            # 【修正】判断逻辑不变，但数据源已更新
+            # 注意：user_record 现在是字典，通过键名访问
+            if not user_record or not pwd_context.verify(password, user_record['password_hash']):
+                return web.json_response({'error': '登录名或密码错误'}, status=401)
+            
+            # 注意：通过键名 'user_id' 获取 QQ 号
+            qq_user_id = user_record['user_id']
+            expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES)
+            payload = {'sub': qq_user_id, 'login_id': login_id, 'exp': expire}
+            token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+            
+            return web.json_response({'access_token': token, 'token_type': 'bearer', 'user_id': qq_user_id, 'login_id': login_id})
+        except Exception as e:
+            logger.error(f"登录时发生错误: {e}", exc_info=True)
+            return web.json_response({'error': '服务器内部错误'}, status=500)
+
+    async def _api_auth_forgot_password(self, request: web.Request):
+        """API: 发起忘记密码请求，返回验证码。"""
+        try:
+            data = await request.json()
+            login_id = data.get('user_id')
+            if not login_id:
+                return web.json_response({'error': '用户ID不能为空'}, status=400)
+
+            user_record = await self.plugin.db_manager.get_user_by_login_id(login_id)
+            if not user_record:
+                # For security, don't reveal if the user exists or not
+                return web.json_response({'error': '如果该用户存在，重置指令已发送'}, status=404)
+
+            qq_user_id = user_record['user_id']
+            code = f"{random.randint(100000, 999999)}"
+            while code in self.plugin.pending_password_resets:
+                code = f"{random.randint(100000, 999999)}"
+
+            self.plugin.pending_password_resets[code] = {
+                'login_id': login_id,
+                'qq_user_id': qq_user_id,
+                'timestamp': datetime.now(),
+                'verified': False
+            }
+            logger.info(f"为登录ID '{login_id}' (QQ: {qq_user_id}) 生成了密码重置码: {code}")
+            return web.json_response({'success': True, 'reset_code': code})
+        except Exception as e:
+            logger.error(f"发起忘记密码请求时出错: {e}", exc_info=True)
+            return web.json_response({'error': '服务器内部错误'}, status=500)
+
+    async def _api_auth_reset_password(self, request: web.Request):
+        """API: 使用验证码和新密码完成密码重置。"""
+        try:
+            data = await request.json()
+            login_id = data.get('user_id')
+            code = data.get('reset_code')
+            new_password = data.get('new_password')
+
+            if not all([login_id, code, new_password]):
+                return web.json_response({'error': '所有字段均为必填项'}, status=400)
+
+            pending_request = self.plugin.pending_password_resets.get(code)
+
+            if not pending_request or (datetime.now() - pending_request['timestamp']) > timedelta(minutes=5):
+                return web.json_response({'error': '无效或已过期的重置码'}, status=400)
+
+            if not pending_request.get('verified'):
+                return web.json_response({'error': '该重置码尚未通过QQ验证'}, status=403)
+
+            if pending_request.get('login_id') != login_id:
+                return web.json_response({'error': '重置码与用户ID不匹配'}, status=403)
+
+            new_password_hash = pwd_context.hash(new_password)
+            await self.plugin.db_manager.update_user_password(login_id, new_password_hash)
+
+            del self.plugin.pending_password_resets[code]
+            logger.info(f"登录ID '{login_id}' 的密码已成功重置。")
+            return web.json_response({'success': True, 'message': '密码重置成功！'})
+        except Exception as e:
+            logger.error(f"重置密码时出错: {e}", exc_info=True)
+            return web.json_response({'error': '服务器内部错误'}, status=500)
+

@@ -5,89 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>实时K线与交易</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <style>
-        /* --- 原有样式 --- */
-        html, body { margin: 0; padding: 0; background-color: #1a1a1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-        .main-content { display: flex; flex-grow: 1; min-height: 0; }
-        .left-panel { flex-shrink: 0; width: 300px; background-color: #252526; border-right: 1px solid #444; display: flex; flex-direction: column; overflow-y: auto; }
-        .right-panel { flex-grow: 1; display: flex; flex-direction: column; min-width: 0; }
-        .tab-container { flex-shrink: 0; padding: 10px; background-color: #252526; border-bottom: 1px solid #444; display: flex; overflow-x: auto; gap: 10px; -ms-overflow-style: none; scrollbar-width: none; }
-        .tab-container::-webkit-scrollbar { display: none; }
-        .tab { padding: 6px 12px; border: 1px solid #555; border-radius: 4px; cursor: pointer; user-select: none; background-color: #333; color: #ccc; white-space: nowrap; font-size: 14px; }
-        .tab:hover { background-color: #454545; }
-        .tab.active { background-color: #007acc; color: #fff; border-color: #007acc; }
-        .time-selector-container { flex-shrink: 0; padding: 5px 10px 10px 10px; background-color: #252526; display: flex; justify-content: flex-start; gap: 10px; }
-        .time-tab { padding: 4px 10px; font-size: 13px; }
-        .chart-container { flex-grow: 1; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
-        #kline-chart { width: 100%; height: 100%; min-height: 250px; }
-        .portfolio-card-wrapper { padding: 15px; border-bottom: 1px solid #444; background-color: #252526; }
-        .portfolio-card { background-color: #313244; color: #cdd6f4; font-family: 'Noto Sans SC', sans-serif; padding: 15px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3); }
-        .portfolio-header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #45475a; padding-bottom: 8px; margin-bottom: 12px; }
-        .portfolio-header .name { font-size: 20px; font-weight: 700; color: #cba6f7; }
-        .portfolio-stock-item { margin-bottom: 10px; padding: 8px; background-color: #3d3e52; border-left: 4px solid #585b70; border-radius: 4px; cursor: pointer; transition: background-color 0.2s ease-in-out; }
-        .portfolio-stock-item:hover { background-color: #4a4b63; }
-        .portfolio-stock-header { display: flex; justify-content: space-between; align-items: center; font-size: 16px; font-weight: 700; }
-        .portfolio-stock-details { display: flex; justify-content: space-between; margin-top: 5px; font-size: 12px; color: #a6adc8; }
-        .portfolio-pnl.positive { color: #a6e3a1; } .portfolio-pnl.negative { color: #f38ba8; }
-        .portfolio-footer { margin-top: 15px; padding-top: 10px; border-top: 1px solid #45475a; font-size: 14px; }
-        .portfolio-footer-item { display: flex; justify-content: space-between; margin-bottom: 3px; }
-        .no-holdings-message { text-align: center; padding: 20px; color: #a6adc8; font-size: 16px; }
-
-        /* --- 新增：登录与交易区域UI样式 --- */
-        .auth-section { order: -1; padding: 15px; background-color: #2c2c2e; border-bottom: 1px solid #444; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-        .auth-section .user-info { font-size: 14px; color: #a6e3a1; font-weight: bold; }
-        .auth-section .auth-buttons button { padding: 6px 12px; font-size: 13px; cursor: pointer; border: 1px solid #555; background-color: #3e3e42; color: #ccc; border-radius: 4px; }
-        .auth-section .auth-buttons button:hover { background-color: #555; }
-        #logout-button { background-color: #f38ba8; color: #1e1e2e; }
-        .trade-panel { display: none; padding: 15px; background-color: #2c2c2e; border-top: 1px solid #444; margin-top: auto;}
-        .trade-panel.active { display: block; }
-        .trade-panel h3 { margin: 0 0 10px 0; font-size: 16px; color: #cba6f7; text-align: center; }
-        .trade-form { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
-        .trade-form input { flex-grow: 1; padding: 8px; border: 1px solid #555; border-radius: 4px; background-color: #333; color: #e0e0e0; font-size: 14px; }
-        .trade-form button { padding: 10px 15px; font-size: 16px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
-        .trade-form .buy-btn { background-color: #a6e3a1; color: #1e1e2e; }
-        .trade-form .sell-btn { background-color: #f38ba8; color: #1e1e2e; }
-        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); align-items: center; justify-content: center; }
-        .modal-content { background-color: #252526; padding: 20px; border: 1px solid #888; width: 80%; max-width: 400px; border-radius: 8px; color: #e0e0e0; position: relative; }
-        .modal-content h2 { margin-top: 0; color: #cba6f7; }
-        .modal-form-group { margin-bottom: 15px; }
-        .modal-form-group label { display: block; margin-bottom: 5px; }
-        .modal-form-group input { width: 100%; padding: 8px; box-sizing: border-box; background-color: #333; border: 1px solid #555; color: #e0e0e0; border-radius: 4px; }
-        .modal-button { width: 100%; padding: 10px; background-color: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
-        .modal-button:hover { background-color: #005f99; }
-        .close-button { color: #aaa; float: right; font-size: 28px; font-weight: bold; position: absolute; top: 10px; right: 15px; }
-        .close-button:hover, .close-button:focus { color: #fff; text-decoration: none; cursor: pointer; }
-        #toast-container { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; align-items: center; gap: 10px;}
-        .toast { background-color: #333; color: #fff; padding: 12px 20px; border-radius: 25px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); opacity: 0; transition: opacity 0.5s, transform 0.5s; font-size: 14px; transform: translateY(20px); }
-        .toast.show { opacity: 1; transform: translateY(0); }
-        .toast.success { background-color: #14b143; }
-        .toast.error { background-color: #ef232a; }
-
-        /* --- 核心修改：优化移动端布局 --- */
-        @media (max-width: 768px) {
-            .main-content {
-                flex-direction: column;
-                overflow-y: auto; /* 允许主内容区在内容溢出时滚动 */
-            }
-            .left-panel {
-                width: 100%;
-                border-right: none;
-                border-bottom: 1px solid #444;
-                overflow-y: visible;
-                flex-shrink: 0;
-            }
-            .right-panel {
-                width: 100%;
-                flex-grow: 0; /* 关键点1: 右侧面板高度不再强制拉伸，而是由其内容决定 */
-            }
-            .chart-container {
-                flex-grow: 0; /* 关键点2: 图表容器本身也不再拉伸填充 */
-                height: 70vw; /* 关键点3: 设置高度为视口宽度的70%，维持一个舒适的比例 */
-                min-height: 300px; /* 确保在窄屏设备上也有足够的显示空间 */
-            }
-        }
-    </style>
 </head>
 <body>
     <div id="toast-container"></div>
@@ -97,8 +16,8 @@
             <span class="close-button" onclick="closeModal('register-modal')">&times;</span>
             <h2>注册新账户</h2>
             <div class="modal-form-group">
-                <label for="reg-userid">用户ID (推荐QQ号)</label>
-                <input type="text" id="reg-userid" placeholder="请输入您的用户ID">
+                <label for="reg-userid">登录ID</label>
+                <input type="text" id="reg-userid" placeholder="请输入您的登录ID (非QQ号)">
             </div>
             <div class="modal-form-group">
                 <label for="reg-password">密码</label>
@@ -113,17 +32,30 @@
             <span class="close-button" onclick="closeModal('login-modal')">&times;</span>
             <h2>登录账户</h2>
             <div class="modal-form-group">
-                <label for="login-userid">用户ID</label>
-                <input type="text" id="login-userid" placeholder="请输入您的用户ID">
+                <label for="login-userid">登录ID</label>
+                <input type="text" id="login-userid" placeholder="请输入您的登录ID">
             </div>
             <div class="modal-form-group">
                 <label for="login-password">密码</label>
                 <input type="password" id="login-password" placeholder="请输入密码">
             </div>
             <button class="modal-button" onclick="handleLogin()">确认登录</button>
+            <a href="#" class="forgot-password-link" onclick="openForgotPasswordModal()">忘记密码?</a>
         </div>
     </div>
-    
+
+    <div id="forgot-password-modal" class="modal">
+        <div class="modal-content" id="forgot-password-content">
+            <span class="close-button" onclick="closeModal('forgot-password-modal')">&times;</span>
+            <h2>重置密码</h2>
+            <div class="modal-form-group">
+                <label for="forgot-userid">登录ID</label>
+                <input type="text" id="forgot-userid" placeholder="请输入您要重置密码的登录ID">
+            </div>
+            <button class="modal-button" onclick="handleForgotPasswordRequest()">获取重置码</button>
+        </div>
+    </div>
+
     <div class="main-content">
         <div class="left-panel">
             <div id="auth-section" class="auth-section">
@@ -151,7 +83,7 @@
                                 </div>
                                 <div class="portfolio-stock-details">
                                     <span>{{ stock.quantity }}股 @ ${{ "%.2f"|format(stock.avg_cost) }}</span>
-                                    <span class="portfolio-pnl {{ 'positive' if stock.is_positive else 'negative' }}">
+                                    <span class="portfolio-pnl {{ 'positive' if stock.pnl >= 0 else 'negative' }}">
                                         盈亏: ${{ "%+.2f"|format(stock.pnl) }} ({{ "%+.2f"|format(stock.pnl_percent) }}%)
                                     </span>
                                 </div>
@@ -164,7 +96,7 @@
                                 </div>
                                 <div class="portfolio-footer-item">
                                     <span class="portfolio-footer-label">总盈亏</span>
-                                    <span class="portfolio-pnl {{ 'positive' if user_portfolio_data.total.is_positive else 'negative' }}">
+                                    <span class="portfolio-pnl {{ 'positive' if user_portfolio_data.total.pnl >= 0 else 'negative' }}">
                                         ${{ "%+.2f"|format(user_portfolio_data.total.pnl) }} ({{ "%+.2f"|format(user_portfolio_data.total.pnl_percent) }}%)
                                     </span>
                                 </div>
@@ -177,6 +109,7 @@
                     <div class="no-holdings-message">登录后可查看个人持仓信息</div>
                 {% endif %}
             </div>
+
             <div id="trade-panel" class="trade-panel">
                 <h3 id="trade-panel-title">请先登录以进行交易</h3>
                 <div class="trade-form">
@@ -185,8 +118,7 @@
                     <button class="sell-btn" onclick="handleTrade('sell')">卖出</button>
                 </div>
             </div>
-
-            </div>
+        </div>
 
         <div class="right-panel">
             <div class="tab-container">
@@ -205,171 +137,10 @@
         </div>
     </div>
     
-<script type="text/javascript">
-    // --- 全局状态变量 ---
-    const initialUserHash = "{{ user_hash or '' }}";
-    const allStocks = {{ stocks | tojson }};
-    const klineDataCache = {};
-    let myChart = null;
-    let currentPeriod = '1d';
-    let isLoggedIn = false;
-    let authToken = null;
-    let currentUserId = null;
-    // --- 新增：专门用于K线图的用户哈希 ---
-    let currentUserHashForKline = initialUserHash;
-
-    // --- ECharts 核心渲染函数 (无修改) ---
-    function renderChart(stockName, stockId, klineData) {
-        const periodMap = { '1d': '最近 24 小时', '7d': '最近 7 天', '30d': '最近 30 天' };
-        const dataPeriod = periodMap[currentPeriod] || '自定义周期';
-        const dates = klineData.kline_history.map(item => item.date);
-        const data = klineData.kline_history.map(item => [item.open, item.close, item.low, item.high]);
-        const isMobile = window.innerWidth < 768;
-        let gridOption = isMobile ? { left: 50, right: 15, bottom: 70, top: 55 } : { left: '8%', right: '8%', bottom: '15%', top: '15%' };
-        let dataZoomOption = [ { type: 'inside' }, { show: true, type: 'slider', bottom: 10, height: 25, textStyle: { color: '#e0e0e0' } } ];
-        let avgCostLine = [];
-        if (klineData.user_holdings && klineData.user_holdings.length > 0) {
-            const holding = klineData.user_holdings[0]; 
-            avgCostLine.push({ name: '平均成本', yAxis: holding.avg_cost, lineStyle: { color: '#00ccff', type: 'dashed' }, label: { formatter: '{b}: {c}', position: 'insideEndTop', color: '#00ccff' } });
-        }
-        const option = {
-            backgroundColor: 'transparent',
-            title: { text: `${stockName} (${stockId})`, subtext: dataPeriod, left: 'center', textStyle:{color:'#e0e0e0'}, subtextStyle:{color:'#888'}},
-            tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: function (params) { var param = params[0]; if (!param || param.seriesType !== 'candlestick') return; var values = data[param.dataIndex]; var date = new Date(param.name); var formattedTime = ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2); var formattedDate = (date.getMonth() + 1) + '/' + date.getDate(); return `${param.seriesName}<br/>时间: ${formattedDate} ${formattedTime}<br/>` + `<strong>开盘:</strong> ${values[0]}<br/><strong>收盘:</strong> ${values[1]}<br/>` + `<strong>最低:</strong> ${values[2]}<br/><strong>最高:</strong> ${values[3]}`; } },
-            grid: gridOption,
-            xAxis: { type: 'category', data: dates, scale: true, boundaryGap: false, axisLine: { onZero: false }, splitLine: { show: false }, min: 'dataMin', max: 'dataMax', axisLabel: { color: '#e0e0e0', formatter: (v) => new Date(v).toLocaleTimeString('zh-CN', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) } },
-            yAxis: { scale: true, splitArea: { show: false }, axisLabel:{color:'#e0e0e0'}, splitLine:{lineStyle:{color:'#444'}} },
-            dataZoom: dataZoomOption, 
-            series: [{ type: 'candlestick', name: 'K线', data: data, itemStyle: { color: '#ef232a', color0: '#14b143', borderColor: '#ef232a', borderColor0: '#14b143' }, markLine: { symbol: 'none', data: avgCostLine } }]
-        };
-        if(myChart) myChart.setOption(option, true);
-    }
-
-    // --- 核心修正：重构 switchStock 和 登录/退出/状态检查 函数 ---
-    async function switchStock(stockId) {
-        const stock = allStocks.find(s => s.stock_id === stockId);
-        if (!stock) return;
-        document.querySelectorAll('.tab[data-stock-id]').forEach(tab => { tab.classList.toggle('active', tab.dataset.stockId === stockId); });
-        window.location.hash = stockId;
-        if (isLoggedIn) { document.getElementById('trade-panel-title').innerText = `交易: ${stock.name} (${stock.stock_id})`; }
-
-        // 使用全局变量 currentUserHashForKline，它在登录后会被正确设置
-        const cacheKey = `${currentUserHashForKline}_${stockId}_${currentPeriod}`;
-        
-        if (klineDataCache[cacheKey]) {
-            console.log(`使用缓存数据 (${cacheKey}) 渲染 ${stockId}`);
-            renderChart(stock.name, stockId, klineDataCache[cacheKey]);
-            return; 
-        }
-        
-        const fetchUrl = `/api/kline/${stockId}?period=${currentPeriod}&user_hash=${currentUserHashForKline}`;
-        const fetchOptions = { method: 'GET', headers: {} }; // 此接口不再需要JWT
-        
-        if(myChart) myChart.showLoading();
-        try {
-            console.log(`为 ${currentUserHashForKline} 请求新数据: ${stockId}`);
-            const response = await fetch(fetchUrl, fetchOptions);
-            if (!response.ok) throw new Error('Network response was not ok');
-            const responseData = await response.json();
-            
-            klineDataCache[cacheKey] = responseData;
-            renderChart(stock.name, stockId, responseData);
-        } catch (error) { 
-            console.error('Failed to fetch kline data:', error); 
-            if(myChart) myChart.showLoading({ text: '数据加载失败' }); 
-        } finally { 
-            if(myChart) myChart.hideLoading(); 
-        }
-    }
-
-    // UI & 辅助函数 (无修改)
-    function showToast(message, type = 'info') { const container = document.getElementById('toast-container'); const toast = document.createElement('div'); toast.className = `toast ${type}`; toast.textContent = message; container.appendChild(toast); setTimeout(() => { toast.classList.add('show'); }, 10); setTimeout(() => { toast.classList.remove('show'); setTimeout(() => { if (container.contains(toast)) { container.removeChild(toast); } }, 500); }, 3000); }
-    function openModal(modalId) { document.getElementById(modalId).style.display = 'flex'; }
-    function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; }
-    function updateUIForAuthState() { const loginBtn = document.getElementById('login-btn'); const registerBtn = document.getElementById('register-btn'); const logoutBtn = document.getElementById('logout-btn'); const userInfoDisp = document.getElementById('user-info-display'); const tradePanel = document.getElementById('trade-panel'); const tradePanelTitle = document.getElementById('trade-panel-title'); if (isLoggedIn) { loginBtn.style.display = 'none'; registerBtn.style.display = 'none'; logoutBtn.style.display = 'inline-block'; const loginId = localStorage.getItem('loginId') || currentUserId; userInfoDisp.innerText = `欢迎, ${loginId}`; tradePanel.classList.add('active'); const currentStockId = window.location.hash.substring(1); if (currentStockId) { const stock = allStocks.find(s => s.stock_id === currentStockId); if (stock) { tradePanelTitle.innerText = `交易: ${stock.name} (${stock.stock_id})`; } else { tradePanelTitle.innerText = '请选择一支股票进行交易'; } } else { tradePanelTitle.innerText = '请选择一支股票进行交易'; } } else { loginBtn.style.display = 'inline-block'; registerBtn.style.display = 'inline-block'; logoutBtn.style.display = 'none'; userInfoDisp.innerText = '访客模式'; tradePanel.classList.remove('active'); tradePanelTitle.innerText = '请先登录以进行交易'; } }
-
-    // 认证与交易逻辑
-    async function handleRegister() { const userId = document.getElementById('reg-userid').value.trim(); const password = document.getElementById('reg-password').value; if (!userId || !password) { showToast('登录名和密码不能为空', 'error'); return; } try { const response = await fetch('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, password: password }) }); const result = await response.json(); if (response.ok) { const verificationCode = result.verification_code; const registerModalContent = document.querySelector('#register-modal .modal-content'); registerModalContent.innerHTML = `<span class="close-button" onclick="closeModal('register-modal')">&times;</span><h2>请验证您的QQ身份</h2><p style="text-align: center; font-size: 16px;">请将以下6位验证码通过QQ发送给机器人:</p><p style="font-size: 32px; font-weight: bold; color: #a6e3a1; text-align: center; letter-spacing: 5px; margin: 20px 0;">${verificationCode}</p><p style="text-align: center; color: #888; font-size: 14px;">格式为：<br> <code style="background:#333; padding: 2px 5px; border-radius:3px;">/验证 ${verificationCode}</code></p><p style="text-align: center; color: #888; font-size: 12px;">(验证码5分钟内有效)</p>`; showToast('验证码已生成，请查收！', 'success'); } else { throw new Error(result.error || '发起注册失败'); } } catch (error) { showToast(error.message, 'error'); } }
-    
-    async function handleLogin() {
-        const userId = document.getElementById('login-userid').value.trim();
-        const password = document.getElementById('login-password').value;
-        if (!userId || !password) { showToast('用户ID和密码不能为空', 'error'); return; }
-        try {
-            const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, password: password }) });
-            const result = await response.json();
-            if (response.ok && result.access_token) {
-                authToken = result.access_token;
-                currentUserId = result.user_id; // 真实的QQ号
-                isLoggedIn = true;
-                localStorage.setItem('authToken', authToken);
-                localStorage.setItem('currentUserId', currentUserId);
-                localStorage.setItem('loginId', result.login_id);
-                
-                // --- 核心修正：登录后，获取并存储 user_hash ---
-                try {
-                    const hashResponse = await fetch(`/api/get_user_hash?qq_id=${currentUserId}`);
-                    const hashData = await hashResponse.json();
-                    if (hashData.user_hash) {
-                        currentUserHashForKline = hashData.user_hash;
-                        localStorage.setItem('currentUserHashForKline', currentUserHashForKline);
-                        console.log(`登录成功，获取到用户哈希: ${currentUserHashForKline}`);
-                    }
-                } catch (e) {
-                    console.error("获取用户哈希失败", e);
-                    showToast('获取用户哈希失败，成本线可能无法显示', 'error');
-                }
-
-                Object.keys(klineDataCache).forEach(key => delete klineDataCache[key]);
-                console.log("登录成功，K线图缓存已清空。");
-                showToast('登录成功！', 'success');
-                closeModal('login-modal');
-                await refreshPortfolioData();
-                updateUIForAuthState();
-                const currentStockId = window.location.hash.substring(1);
-                if (currentStockId) { switchStock(currentStockId); }
-            } else { throw new Error(result.error || '登录失败'); }
-        } catch (error) { showToast(error.message, 'error'); }
-    }
-
-    function handleLogout() {
-        localStorage.clear(); // 清空所有本地存储
-        console.log("已退出登录，所有缓存已清空。");
-        // 重置所有状态变量
-        authToken = null; currentUserId = null; isLoggedIn = false; currentUserHashForKline = initialUserHash;
-        showToast('已退出登录。');
-        window.location.href = window.location.pathname;
-    }
-
-    async function handleTrade(type) { if (!isLoggedIn) { showToast('请先登录再进行交易', 'error'); openModal('login-modal'); return; } const stockId = window.location.hash.substring(1); const quantity = parseInt(document.getElementById('trade-quantity').value, 10); if (!stockId) { showToast('请先选择一支股票', 'error'); return; } if (isNaN(quantity) || quantity <= 0) { showToast('请输入有效的交易数量', 'error'); return; } const stockName = allStocks.find(s => s.stock_id === stockId)?.name || stockId; if (!confirm(`您确定要【${type === 'buy' ? '买入' : '卖出'}】 ${quantity} 股 ${stockName} 吗？`)) { return; } const endpoint = `/api/v1/trade/${type}`; try { const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` }, body: JSON.stringify({ stock_id: stockId, quantity: quantity }) }); const result = await response.json(); if (response.ok && result.success) { showToast(result.message, 'success'); document.getElementById('trade-quantity').value = ''; await refreshPortfolioData(); } else { throw new Error(result.message || result.error || '交易失败'); } } catch (error) { showToast(error.message, 'error'); } }
-    async function refreshPortfolioData() { if (!isLoggedIn || !currentUserId) return; const wrapper = document.getElementById('portfolio-wrapper'); try { const response = await fetch(`/api/v1/portfolio`, { headers: { 'Authorization': `Bearer ${authToken}` } }); if (!response.ok) throw new Error('获取持仓数据失败'); const data = await response.json(); let html = `<div class="portfolio-card"><div class="portfolio-header"><span class="name">${data.user_name}</span><span class="label">的持仓详情</span></div>`; if (data.holdings_detailed && data.holdings_detailed.length > 0) { data.holdings_detailed.forEach(stock => { const pnlClass = stock.pnl >= 0 ? 'positive' : 'negative'; html += `<div class="portfolio-stock-item clickable-stock" data-stock-id="${stock.stock_id}"><div class="portfolio-stock-header"><span class="stock-name">${stock.name} (${stock.stock_id})</span><span class="market-value">市值 $${stock.market_value.toFixed(2)}</span></div><div class="portfolio-stock-details"><span>${stock.quantity}股 @ $${stock.avg_cost.toFixed(2)}</span><span class="portfolio-pnl ${pnlClass}">盈亏: $${stock.pnl.toFixed(2)} (${stock.pnl_percent.toFixed(2)}%)</span></div></div>`; }); const totalPNL = data.holdings_detailed.reduce((sum, h) => sum + h.pnl, 0); const totalCost = data.stock_value - totalPNL; const totalPNLPercent = totalCost !== 0 ? (totalPNL / totalCost) * 100 : 0; const totalPNLClass = totalPNL >= 0 ? 'positive' : 'negative'; html += `<div class="portfolio-footer"><div class="portfolio-footer-item"><span>总市值</span><span>$${data.stock_value.toFixed(2)}</span></div><div class="portfolio-footer-item"><span>总盈亏</span><span class="portfolio-pnl ${totalPNLClass}">$${totalPNL.toFixed(2)} (${totalPNLPercent.toFixed(2)}%)</span></div></div>`; } else { html += '<div class="no-holdings-message">哎呀，你当前没有持仓呢！</div>'; } html += '</div>'; wrapper.innerHTML = html; wrapper.querySelectorAll('.clickable-stock').forEach(item => { item.addEventListener('click', () => switchStock(item.dataset.stockId)); }); } catch (error) { console.error("刷新持仓失败:", error); wrapper.innerHTML = '<div class="no-holdings-message">刷新持仓数据失败</div>'; } }
-    
-    function checkLoginStatus() {
-        const token = localStorage.getItem('authToken');
-        const userId = localStorage.getItem('currentUserId');
-        const userHash = localStorage.getItem('currentUserHashForKline');
-        if (token && userId && userHash) {
-            authToken = token;
-            currentUserId = userId;
-            currentUserHashForKline = userHash;
-            isLoggedIn = true;
-            refreshPortfolioData();
-        }
-        updateUIForAuthState();
-    }
-
-    // --- 初始化 ---
-    document.addEventListener('DOMContentLoaded', () => {
-        myChart = echarts.init(document.getElementById('kline-chart'), 'dark');
-        document.querySelectorAll('.tab[data-stock-id]').forEach(tab => { tab.addEventListener('click', () => switchStock(tab.dataset.stockId)); });
-        document.querySelectorAll('.time-tab').forEach(tab => { tab.addEventListener('click', () => { if (tab.classList.contains('active')) return; currentPeriod = tab.dataset.period; document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); const stockId = window.location.hash.substring(1) || (allStocks.length > 0 ? allStocks[0].stock_id : null); if (stockId) { Object.keys(klineDataCache).forEach(key => delete klineDataCache[key]); switchStock(stockId); } }); });
-        document.querySelectorAll('.portfolio-stock-item').forEach(item => { item.addEventListener('click', () => switchStock(item.dataset.stockId)); });
-        const initialStockId = window.location.hash.substring(1) || (allStocks.length > 0 ? allStocks[0].stock_id : null);
-        checkLoginStatus(); // 提前检查登录状态，以确定initialStockId的请求方式
-        if (initialStockId) { switchStock(initialStockId); }
-        setInterval(() => { const stockId = window.location.hash.substring(1); if (stockId && document.hasFocus()) { const cacheKey = `${currentUserHashForKline}_${stockId}_${currentPeriod}`; delete klineDataCache[cacheKey]; switchStock(stockId); } }, 2.5 * 60 * 1000);
-    });
-    window.onclick = function(event) { if (event.target.classList.contains('modal')) { closeModal(event.target.id); } }
-</script>
+    <script id="main-script" 
+            src="/static/script.js" 
+            data-user-hash="{{ user_hash or '' }}" 
+            data-stocks="{{ stocks | tojson | e }}">
+    </script>
 </body>
 </html>
