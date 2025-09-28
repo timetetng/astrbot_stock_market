@@ -14,7 +14,12 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 SERVER_PUBLIC_IP = ""
 SERVER_PORT = 
 SERVER_BASE_URL = f"http://{SERVER_PUBLIC_IP}:{SERVER_PORT}"
-
+# API 无速率限制白名单
+RATE_LIMIT_WHITELIST = [
+    "127.0.0.1",       # 本地回环地址
+    "192.168.1.0/24",  # 局域网192.168.1.0 到 192.168.1.255 范围内的地址
+    "10.8.0.0/24"    # Wireguard VPN 默认地址范围
+]
 # --- API 安全与JWT认证 ---
 JWT_SECRET_KEY = "4d+/vzSlO9EsdI0/4oEtpS7wkfORC9JJd5fBvGJXEgYkym3jpPmozvvqTIVnXYC1cqdWpfMxfN7G+t1nJWau+g=="
 JWT_ALGORITHM = "HS256"
