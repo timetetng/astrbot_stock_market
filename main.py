@@ -1343,7 +1343,7 @@ class StockMarketRefactored(Star):
         current_user_hash = generate_user_hash(user_id)
 
         # 【最终修正】直接使用从 config.py 导入的变量
-        base_url = f"http://{SERVER_PUBLIC_IP}:{SERVER_PORT}/charts/{current_user_hash}"
+        base_url = f"https://stock.leewater.online/charts/{current_user_hash}"
 
         if identifier:
             stock = await self.find_stock(identifier)

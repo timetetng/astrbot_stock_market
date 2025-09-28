@@ -4,7 +4,8 @@ import json
 import jwt
 import random
 import time
-import re  # <--- 1. 引入 re 模块
+import re
+import ipaddress  # <--- 1. 引入 ipaddress 模块
 from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Deque
@@ -14,7 +15,11 @@ from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from astrbot.api import logger
-from .config import TEMPLATES_DIR, STATIC_DIR, SERVER_PORT, SERVER_BASE_URL, JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES
+# ▼▼▼ 2. 从配置中导入新增的白名单列表 ▼▼▼
+from .config import (TEMPLATES_DIR, STATIC_DIR, SERVER_PORT, 
+                     SERVER_BASE_URL, JWT_SECRET_KEY, JWT_ALGORITHM, 
+                     JWT_EXPIRATION_MINUTES, RATE_LIMIT_WHITELIST)
+# ▲▲▲ 导入结束 ▲▲▲
 from .utils import jwt_required, generate_user_hash, pwd_context
 
 if TYPE_CHECKING:
@@ -23,11 +28,29 @@ if TYPE_CHECKING:
 @web.middleware
 async def rate_limit_middleware(request: web.Request, handler):
     """
-    一个原生的 aiohttp 速率限制中间件 (升级版：支持正则表达式路径匹配)。
+    一个原生的 aiohttp 速率限制中间件 (升级版：支持正则表达式路径匹配和IP白名单)。
     """
     server_instance = request.app['server_instance']
     
-    # 2. 将 'startswith' 修改为 're.match' 以支持更精确的规则
+    # ▼▼▼ 3. 检查IP白名单 ▼▼▼
+    # 在执行任何速率限制逻辑之前，首先检查请求的IP是否在白名单中。
+    remote_ip = request.remote
+    if remote_ip:
+        try:
+            # 将请求的IP地址字符串转换为ip_address对象
+            request_ip_obj = ipaddress.ip_address(remote_ip)
+            # 遍历白名单中的每一个规则 (IP或网段)
+            for whitelisted_net in RATE_LIMIT_WHITELIST:
+                # 检查请求IP是否属于该规则定义的网络范围
+                if request_ip_obj in ipaddress.ip_network(whitelisted_net, strict=False):
+                    # 如果IP在白名单内，则直接放行，不执行后续的速率限制检查
+                    return await handler(request)
+        except ValueError as e:
+            # 如果配置中的白名单格式错误或IP地址无效，记录日志但服务不中断
+            logger.error(f"处理速率限制白名单时出错: {e}. 请检查 config.py 中的 RATE_LIMIT_WHITELIST 配置。")
+    # ▲▲▲ IP白名单检查结束 ▲▲▲
+    
+    # (原有的速率限制逻辑保持不变)
     for rule in server_instance.rate_limit_rules:
         if re.match(rule['path_regex'], request.path):
             key = rule['get_key_func'](request)
@@ -53,6 +76,7 @@ async def rate_limit_middleware(request: web.Request, handler):
             
     return await handler(request)
 
+# --- WebServer 类的其他部分保持完全不变 ---
 class WebServer:
     def _get_ip_key(self, request: web.Request) -> str:
         """根据请求者的 IP 地址生成 Key"""
@@ -65,7 +89,6 @@ class WebServer:
         return self._get_ip_key(request)
 
     def __init__(self, plugin: "StockMarketRefactored"):
-        logger.info(">>> [DIAGNOSTIC] A. WebServer __init__ starts.")
         self.plugin = plugin
         
         self.app = web.Application(middlewares=[rate_limit_middleware])
@@ -73,28 +96,19 @@ class WebServer:
 
         self.rate_limit_storage: Dict[str, Deque[float]] = {}
         
-        # ▼▼▼ 3. 更新限速规则列表，增加K线专项规则 ▼▼▼
-        # 规则的顺序很重要，会从上到下依次匹配，第一个匹配成功即生效。
+        # 规则列表保持不变
         self.rate_limit_rules = [
-            # 规则1 (最严格): 认证接口，防止暴力破解 (10次/分钟/IP)
             {'path_regex': r'^/api/auth/.*', 'limit': 10, 'period': 60, 'get_key_func': self._get_ip_key},
-            
-            # 规则2 (针对交易): 防止高频交易 (30次/分钟/用户)
             {'path_regex': r'^/api/v1/trade/.*', 'limit': 30, 'period': 60, 'get_key_func': self._get_user_key},
-            
-            # 【【【新增规则】】】
-            # 规则3 (K线详情): 限制大流量包的请求频率 (5次/分钟/IP)
-            # 这个正则表达式精确匹配 /api/v1/stock/任意字符/details
             {'path_regex': r'^/api/v1/stock/[^/]+/details$', 'limit': 5, 'period': 60, 'get_key_func': self._get_ip_key},
-            
-            # 规则4 (通用): 保护所有其他API接口，例如轻量级的价格查询 (60次/分钟/IP)
             {'path_regex': r'^/api/.*', 'limit': 60, 'period': 60, 'get_key_func': self._get_ip_key}
         ]
-        # ▲▲▲ 规则列表更新结束 ▲▲▲
         
         self.runner = None
         self._setup_jinja_and_routes()
 
+    # ... (文件余下的所有代码都与您提供的一致，无需任何修改)
+    
     def _setup_jinja_and_routes(self):
         """配置Jinja2环境和所有Web路由。"""
         
@@ -320,7 +334,6 @@ class WebServer:
             if not login_id or not password:
                 return web.json_response({'error': '登录名和密码不能为空'}, status=400)
 
-            # 【修正】使用 db_manager 查询用户是否存在
             existing_user = await self.plugin.db_manager.get_user_by_login_id(login_id)
             if existing_user:
                 return web.json_response({'error': '该登录名已被使用'}, status=409)
@@ -342,15 +355,11 @@ class WebServer:
             data = await request.json()
             login_id, password = data.get('user_id'), data.get('password')
 
-            # 【修正】使用 db_manager 获取用户信息
             user_record = await self.plugin.db_manager.get_user_by_login_id(login_id)
 
-            # 【修正】判断逻辑不变，但数据源已更新
-            # 注意：user_record 现在是字典，通过键名访问
             if not user_record or not pwd_context.verify(password, user_record['password_hash']):
                 return web.json_response({'error': '登录名或密码错误'}, status=401)
             
-            # 注意：通过键名 'user_id' 获取 QQ 号
             qq_user_id = user_record['user_id']
             expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES)
             payload = {'sub': qq_user_id, 'login_id': login_id, 'exp': expire}
@@ -371,7 +380,6 @@ class WebServer:
 
             user_record = await self.plugin.db_manager.get_user_by_login_id(login_id)
             if not user_record:
-                # For security, don't reveal if the user exists or not
                 return web.json_response({'error': '如果该用户存在，重置指令已发送'}, status=404)
 
             qq_user_id = user_record['user_id']
@@ -422,4 +430,3 @@ class WebServer:
         except Exception as e:
             logger.error(f"重置密码时出错: {e}", exc_info=True)
             return web.json_response({'error': '服务器内部错误'}, status=500)
-
