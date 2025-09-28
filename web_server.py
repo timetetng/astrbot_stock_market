@@ -9,7 +9,7 @@ import ipaddress  # <--- 1. 引入 ipaddress 模块
 from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Deque
-
+import pandas as pd
 import aiohttp_jinja2
 from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -158,13 +158,11 @@ class WebServer:
 
     async def start(self):
         """启动Web服务器。"""
-        logger.info(">>> [DIAGNOSTIC] C. WebServer start() starts.")
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, '0.0.0.0', SERVER_PORT)
         await site.start()
         logger.info(f"Web服务及API已在 {SERVER_BASE_URL} 上启动。")
-        logger.info(">>> [DIAGNOSTIC] D. WebServer start() finished.")
 
     async def stop(self):
         """停止Web服务器。"""
@@ -172,7 +170,6 @@ class WebServer:
             await self.runner.cleanup()
             logger.info("Web服务已关闭。")
 
-    # --- 所有路由处理函数的代码保持不变，这里为了完整性全部包含 ---
 
     @aiohttp_jinja2.template('charts_page.html')
     async def _handle_user_charts_page(self, request: web.Request):
@@ -205,10 +202,47 @@ class WebServer:
         stock = await self.plugin.find_stock(stock_id)
         if not stock or len(stock.kline_history) < 2:
             return web.json_response({'error': 'not found'}, status=404)
-        now = datetime.now()
-        days_map = {'1d': 1, '7d': 7, '30d': 30}
-        cutoff_time = now - timedelta(days=days_map.get(period, 1))
-        filtered_kline_history = [c for c in stock.kline_history if c.get('date') and datetime.fromisoformat(c['date']) >= cutoff_time]
+
+        # ▼▼▼【核心修改】根据周期决定数据切片和聚合粒度 ▼▼▼
+        
+        points_map = {
+            '1d': 288,
+            '7d': 288 * 7,
+            '30d': 288 * 30
+        }
+        num_points = points_map.get(period, 288)
+        kline_history_slice = list(stock.kline_history)[-num_points:]
+        
+        final_kline_data = kline_history_slice
+        
+        # 定义聚合规则
+        resample_rule = None
+        if period == '30d':
+            resample_rule = 'H' # 30天聚合为小时K
+        elif period == '7d':
+            resample_rule = '30T' # 7天聚合为30分钟K
+
+        # 如果需要聚合
+        if resample_rule and len(kline_history_slice) > 0:
+            logger.info(f"为 {stock_id} 请求 {period} 数据，开始聚合为 {resample_rule} K线...")
+            
+            df = pd.DataFrame(kline_history_slice)
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+            df_resampled = df.resample(resample_rule).agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+            }).dropna()
+            
+            aggregated_kline_history = [
+                {"date": index.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close}
+                for index, row in df_resampled.iterrows()
+            ]
+            final_kline_data = aggregated_kline_history
+            logger.info(f"聚合完成，数据点从 {len(kline_history_slice)} 减少到 {len(final_kline_data)}。")
+
+        # ▲▲▲【修改结束】▲▲▲
+
         target_user_id = None
         if user_hash:
             all_user_ids = await self.plugin.db_manager.get_all_user_ids_with_holdings()
@@ -216,13 +250,16 @@ class WebServer:
                 if generate_user_hash(uid) == user_hash:
                     target_user_id = uid
                     break
+        
         user_holdings = []
         if target_user_id:
             asset_info = await self.plugin.get_user_total_asset(target_user_id)
+            # 修正 Bug: 'hold_detailed' 应为 'holdings_detailed'
             for holding in asset_info.get('holdings_detailed', []):
                 if holding['stock_id'] == stock_id:
                     user_holdings.append({"stock_id": stock_id, "quantity": holding['quantity'], "avg_cost": holding['avg_cost']})
-        return web.json_response({"kline_history": filtered_kline_history, "user_holdings": user_holdings})
+        
+        return web.json_response({"kline_history": final_kline_data, "user_holdings": user_holdings})
 
     async def _handle_get_user_hash(self, request: web.Request):
         qq_id = request.query.get('qq_id')

@@ -26,10 +26,12 @@ class DailyBias(Enum):
     DOWN = "下跌日"
     SIDEWAYS = "盘整日"
 
+# ▼▼▼【兼容性修改】重新引入 Trend 枚举 ▼▼▼
 class Trend(Enum):
     BULLISH = 1
     BEARISH = -1
     NEUTRAL = 0
+# ▲▲▲【修改结束】▲▲▲
 
 # --- 数据类 ---
 @dataclass
@@ -76,8 +78,19 @@ class VirtualStock:
     previous_close: float = 0.0
     fundamental_value: float = 200.0
     daily_script: Optional[DailyScript] = None
+
+    # ▼▼▼【V2.1 核心改动】▼▼▼
+    # 新的“动能波”字段
+    intraday_momentum: float = 0.0
+    momentum_target_peak: float = 0.0
+    momentum_duration_ticks: int = 0
+    momentum_current_tick: int = 0
+    
+    # 为了兼容 main.py 而保留/重加的旧字段 (将由新算法在后台更新)
     intraday_trend: Trend = Trend.NEUTRAL
     intraday_trend_duration: int = 0
+    # ▲▲▲【改动结束】▲▲▲
+
     price_history: deque = field(default_factory=lambda: deque(maxlen=60))
     daily_close_history: deque = field(default_factory=lambda: deque(maxlen=20))
     kline_history: deque = field(default_factory=lambda: deque(maxlen=9000))

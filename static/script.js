@@ -1,5 +1,4 @@
 // --- 全局状态变量 ---
-// 注意：Jinja2模板变量将通过HTML的data属性传入
 let initialUserHash, allStocks;
 const klineDataCache = {};
 let myChart = null;
@@ -9,29 +8,65 @@ let authToken = null;
 let currentUserId = null;
 let currentUserHashForKline = '';
 
-// --- ECharts 核心渲染函数 ---
+// --- ECharts 核心渲染函数 (V2: 带MA线) ---
 function renderChart(stockName, stockId, klineData) {
-    const periodMap = { '1d': '最近 24 小时', '7d': '最近 7 天', '30d': '最近 30 天' };
+    const periodMap = { '1d': '最近 288 K线', '7d': '最近 2016 K线', '30d': '最近 30 天 (小时K)' };
     const dataPeriod = periodMap[currentPeriod] || '自定义周期';
+
+    // 1. 准备基础K线数据
     const dates = klineData.kline_history.map(item => item.date);
-    const data = klineData.kline_history.map(item => [item.open, item.close, item.low, item.high]);
+    const klineValues = klineData.kline_history.map(item => [item.open, item.close, item.low, item.high]);
+
+    // ▼▼▼【核心修改】计算MA均线数据 ▼▼▼
+    function calculateMA(dayCount, data) {
+        let result = [];
+        for (let i = 0, len = data.length; i < len; i++) {
+            if (i < dayCount - 1) {
+                result.push('-'); // 前面的数据不足，无法计算，用'-'占位
+                continue;
+            }
+            let sum = 0;
+            for (let j = 0; j < dayCount; j++) {
+                sum += parseFloat(data[i - j][1]); // data[x][1] 是收盘价, 使用parseFloat确保是数字
+            }
+            result.push((sum / dayCount).toFixed(2));
+        }
+        return result;
+    }
+    
+    const ma5Data = calculateMA(5, klineValues);
+    const ma10Data = calculateMA(10, klineValues);
+    // ▲▲▲【修改结束】▲▲▲
+
     const isMobile = window.innerWidth < 768;
-    let gridOption = isMobile ? { left: 50, right: 15, bottom: 70, top: 55 } : { left: '8%', right: '8%', bottom: '15%', top: '15%' };
-    let dataZoomOption = [{ type: 'inside' }, { show: true, type: 'slider', bottom: 10, height: 25, textStyle: { color: '#e0e0e0' } }];
+    let gridOption = isMobile ? { left: 50, right: 15, bottom: 80, top: 55 } : { left: '8%', right: '8%', bottom: '20%', top: '15%' };
+    let dataZoomOption = [{ type: 'inside' }, { show: true, type: 'slider', bottom: '10%', height: 25, textStyle: { color: '#e0e0e0' } }];
+    
     let avgCostLine = [];
     if (klineData.user_holdings && klineData.user_holdings.length > 0) {
         const holding = klineData.user_holdings[0];
         avgCostLine.push({ name: '平均成本', yAxis: holding.avg_cost, lineStyle: { color: '#00ccff', type: 'dashed' }, label: { formatter: '{b}: {c}', position: 'insideEndTop', color: '#00ccff' } });
     }
+    
     const option = {
         backgroundColor: 'transparent',
         title: { text: `${stockName} (${stockId})`, subtext: dataPeriod, left: 'center', textStyle: { color: '#e0e0e0' }, subtextStyle: { color: '#888' } },
-        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: function (params) { var param = params[0]; if (!param || param.seriesType !== 'candlestick') return; var values = data[param.dataIndex]; var date = new Date(param.name); var formattedTime = ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2); var formattedDate = (date.getMonth() + 1) + '/' + date.getDate(); return `${param.seriesName}<br/>时间: ${formattedDate} ${formattedTime}<br/>` + `<strong>开盘:</strong> ${values[0]}<br/><strong>收盘:</strong> ${values[1]}<br/>` + `<strong>最低:</strong> ${values[2]}<br/><strong>最高:</strong> ${values[3]}`; } },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: function (params) { var param = params[0]; if (!param || param.seriesType !== 'candlestick') return ''; var values = klineValues[param.dataIndex]; var date = new Date(param.name); var formattedTime = ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2); var formattedDate = (date.getMonth() + 1) + '/' + date.getDate(); return `${param.seriesName}<br/>时间: ${formattedDate} ${formattedTime}<br/>` + `<strong>开盘:</strong> ${values[0]}<br/><strong>收盘:</strong> ${values[1]}<br/>` + `<strong>最低:</strong> ${values[2]}<br/><strong>最高:</strong> ${values[3]}`; } },
+        legend: {
+            data: ['K线', 'MA5', 'MA10'],
+            inactiveColor: '#777',
+            textStyle: { color: '#e0e0e0' },
+            bottom: isMobile ? '45px' : '40px'
+        },
         grid: gridOption,
         xAxis: { type: 'category', data: dates, scale: true, boundaryGap: false, axisLine: { onZero: false }, splitLine: { show: false }, min: 'dataMin', max: 'dataMax', axisLabel: { color: '#e0e0e0', formatter: (v) => new Date(v).toLocaleTimeString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) } },
         yAxis: { scale: true, splitArea: { show: false }, axisLabel: { color: '#e0e0e0' }, splitLine: { lineStyle: { color: '#444' } } },
         dataZoom: dataZoomOption,
-        series: [{ type: 'candlestick', name: 'K线', data: data, itemStyle: { color: '#ef232a', color0: '#14b143', borderColor: '#ef232a', borderColor0: '#14b143' }, markLine: { symbol: 'none', data: avgCostLine } }]
+        series: [
+            { type: 'candlestick', name: 'K线', data: klineValues, itemStyle: { color: '#ef232a', color0: '#14b143', borderColor: '#ef232a', borderColor0: '#14b143' }, markLine: { symbol: 'none', data: avgCostLine } },
+            { name: 'MA5', type: 'line', data: ma5Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#FFFFFF', width: 1.0 } },
+            { name: 'MA10', type: 'line', data: ma10Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#ff60ff', width: 1.0 } }
+        ]
     };
     if (myChart) myChart.setOption(option, true);
 }

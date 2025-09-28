@@ -2,12 +2,17 @@
 
 import asyncio
 import os
+from pathlib import Path
 import random
 from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from playwright.async_api import async_playwright, Browser, Error as PlaywrightError
 from jinja2 import Environment, FileSystemLoader
-
+import pandas as pd
+import mplfinance as mpf
+import matplotlib
+from matplotlib.font_manager import FontProperties
+import matplotlib.pyplot as plt
 # --- AstrBot API 导入 ---
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -67,7 +72,6 @@ class StockMarketRefactored(Star):
         self._ready_event = asyncio.Event()
         # --- 初始化任务 ---
         self.init_task = asyncio.create_task(self.plugin_init())
-
     async def terminate(self):
         logger.info("开始关闭模拟炒股插件...")
         shared_services.pop("stock_market_api", None) # <--- 修改此行
@@ -206,13 +210,14 @@ class StockMarketRefactored(Star):
         change = day_close - day_open
         change_percent = (change / day_open) * 100 if day_open > 0 else 0
         
-        # --- 获取趋势文本 ---
-        trend_map = {
-            "BULLISH": "看涨",
-            "BEARISH": "看跌",
-            "NEUTRAL": "盘整"
-        }
-        trend_text = trend_map.get(stock.intraday_trend.name, "未知")
+        # --- 获取趋势文本 (基于动能值转换) ---
+        momentum = stock.intraday_momentum
+        if momentum > 0.15:
+            trend_text = "看涨"
+        elif momentum < -0.15:
+            trend_text = "看跌"
+        else:
+            trend_text = "盘整"
 
         # --- 获取股票编号 ---
         stock_index = -1
@@ -234,6 +239,90 @@ class StockMarketRefactored(Star):
             "short_term_trend": trend_text,
             "kline_data_24h": k_history_24h
         }
+
+    async def _generate_kline_chart_image(self, kline_data: list, stock_name: str, stock_id: str, granularity: int) -> str:
+        """[最终整合版] 生成高度自定义样式且支持可变颗粒度的K线图。"""
+        logger.info(f"开始为 {stock_name}({stock_id}) 生成 {granularity}分钟 K线图...")
+        
+        def plot_and_save_chart_in_thread():
+            matplotlib.use('Agg')
+            
+            # --- 【字体加载与名称获取】 ---
+            script_path = Path(__file__).resolve().parent
+            # 假设字体文件在 'astrbot_stock_market/static/fonts/SimHei.ttf'
+            font_path = script_path / 'static' / 'fonts' / 'SimHei.ttf'
+            if not os.path.exists(font_path):
+                logger.error(f"致命错误：字体文件未找到于 '{font_path}'")
+                raise FileNotFoundError(f"字体文件未找到于 '{font_path}'")
+            
+            from matplotlib import font_manager
+            font_manager.fontManager.addfont(str(font_path))
+            prop = font_manager.FontProperties(fname=font_path)
+            font_name = prop.get_name()
+            title_font = FontProperties(fname=font_path, size=32, weight='bold')
+
+            # --- 【数据准备与聚合】 ---
+            df = pd.DataFrame(kline_data)
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
+
+            if granularity > 5:
+                rule = f'{granularity}T'
+                logger.info(f"开始将数据聚合为 {rule} 周期...")
+                df = df.resample(rule).agg({
+                    'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
+                }).dropna()
+                logger.info(f"数据聚合完成，剩余 {len(df)} 个数据点。")
+
+            # --- 【样式与颜色设置 】 ---
+            mc = mpf.make_marketcolors(up='#ff4747', down='#00b060', inherit=True)
+            style = mpf.make_mpf_style(
+                base_mpf_style='binance', 
+                marketcolors=mc, 
+                gridstyle='--',
+                rc={
+                    'font.family': font_name, 
+                    'xtick.labelsize': 18, 
+                    'ytick.labelsize': 24, 
+                    'axes.labelsize': 26, 
+                    'axes.labelweight': 'bold'
+                }
+            )
+            
+            title = f"{stock_name} ({stock_id}) - 最近24小时 ({granularity}分钟K)"
+            save_path = os.path.join(DATA_DIR, f"kline_{stock_id}_{random.randint(1000,9999)}.png")
+
+            # --- 【绘图与调整 】 ---
+            fig, axes = mpf.plot(
+                df,
+                type='candle',
+                style=style,
+                ylabel='Price ($)',
+                figsize=(20, 12),
+                datetime_format='%m/%d %H:%M',
+                mav=(5, 10),
+                returnfig=True
+            )
+            
+            axes[0].set_title(title, fontproperties=title_font)
+            fig.subplots_adjust(left=0.05, right=0.98, bottom=0.1, top=0.92) # 使用了您更优的边距参数
+            
+            fig.savefig(save_path, dpi=150)
+            plt.close(fig) # 关键：关闭图形，防止内存泄漏
+            # --- 【绘图结束】 ---
+            
+            logger.info(f"K线图已成功保存至: {save_path}")
+            return save_path
+
+        try:
+            path = await asyncio.to_thread(plot_and_save_chart_in_thread)
+            return path
+        except Exception as e:
+            logger.error(f"在 _generate_kline_chart_image 函数内部发生严重错误: {e}", exc_info=True)
+            raise
+
+
 
     async def get_user_total_asset(self, user_id: str) -> Dict[str, Any]:
         """
@@ -559,9 +648,9 @@ class StockMarketRefactored(Star):
         
         # --- 增强信息计算 ---
         relevant_history = list(k_history)[-288:]
-        day_high = max(k['high'] for k in relevant_history)
-        day_low = min(k['low'] for k in relevant_history)
-        day_open = relevant_history[0]['open']
+        day_high = max(k['high'] for k in relevant_history) if relevant_history else stock.current_price
+        day_low = min(k['low'] for k in relevant_history) if relevant_history else stock.current_price
+        day_open = relevant_history[0]['open'] if relevant_history else stock.previous_close
 
         sma5_text = "数据不足"
         if len(k_history) >= 5:
@@ -569,16 +658,15 @@ class StockMarketRefactored(Star):
             sma5 = sum(recent_closes) / 5
             sma5_text = f"${sma5:.2f}"
             
-        # --- 获取内部趋势状态 ---
-        trend_map = {
-            "BULLISH": "看涨",
-            "BEARISH": "看跌",
-            "NEUTRAL": "盘整"
-        }
-        # **核心修改点**: 将 stock.trend.name 改为 stock.intraday_trend.name
-        current_trend_text = trend_map.get(stock.intraday_trend.name, "未知")
+        # --- 获取内部趋势状态 (基于动能值转换) ---
+        momentum = stock.intraday_momentum
+        if momentum > 0.15:
+            current_trend_text = "看涨"
+        elif momentum < -0.15:
+            current_trend_text = "看跌"
+        else:
+            current_trend_text = "盘整"
 
-        # --- 重新组织回复信息 ---
         reply = (
             f"{emoji}【{stock.name} ({stock.stock_id})】行情\n"
             f"--------------------\n"
@@ -596,78 +684,57 @@ class StockMarketRefactored(Star):
         yield event.plain_result(reply)
 
     @filter.command("K线", alias={"k线图", "k线", "K线图"})
-    async def show_kline(self, event: AstrMessageEvent, identifier: str):
-        """显示指定股票的K线图 (仅最近24小时)"""
-        await self._ready_event.wait() 
-        if identifier == None:
-            # 如果用户只输入了 "/行情" 而没有带参数，则返回帮助信息
-            yield event.plain_result("🤔 请输入需要查询的股票。\n正确格式: /k线 <编号/代码/名称>")
+    async def show_kline(self, event: AstrMessageEvent, identifier: str, granularity_str: Optional[str] = "5"):
+        """显示指定股票的K线图 (可指定颗粒度)"""
+        await self._ready_event.wait()
+        
+        if identifier is None:
+            yield event.plain_result("🤔 请输入需要查询的股票。\n正确格式: /k线 <标识符> [颗粒度(分钟)]")
             return
+        
+        # ▼▼▼【核心修改】处理和验证颗粒度参数 ▼▼▼
+        try:
+            granularity = int(granularity_str)
+            if granularity < 5 or granularity % 5 != 0:
+                yield event.plain_result("❌ 颗粒度必须是大于等于5, 且为5的倍数的整数 (如 5, 10, 15, 30, 60)。")
+                return
+        except ValueError:
+            yield event.plain_result("❌ 颗粒度必须是一个有效的数字。")
+            return
+        # ▲▲▲【修改结束】▲▲▲
+
         stock = await self.find_stock(str(identifier))
         if not stock:
             yield event.plain_result(f"❌ 找不到标识符为 '{identifier}' 的股票。")
-            return
-            
-        if not self.playwright_browser:
-            yield event.plain_result("❌ 图表渲染服务当前不可用，请联系管理员。")
             return
 
         if len(stock.kline_history) < 2:
             yield event.plain_result(f"📈 {stock.name} 的K线数据不足，无法生成图表。")
             return
 
-        yield event.plain_result(f"正在为 {stock.name} 生成最近24小时K线图，请稍候...")
+        yield event.plain_result(f"正在为 {stock.name} 生成最近24小时的 {granularity}分钟 K线图，请稍候...")
         
-        # 使用 jinja2 渲染 HTML 模板
+        screenshot_path = ""
         try:
-            # === 新增：定义24小时的数据点数量 (按5分钟一次计算) ===
-            POINTS_FOR_24H = 288 
+            # 依然获取288个5分钟数据点作为基础数据源
+            kline_data_for_image = list(stock.kline_history)[-288:]
             
-            # === 新增：从完整的历史记录中只切片出最近24小时的数据 ===
-            # Python的切片[-288:]即使总数不足288也会安全地返回所有可用数据
-            kline_data_for_image = list(stock.kline_history)[-POINTS_FOR_24H:]
-
-            template = jinja_env.get_template("kline_chart.html")
-            
-            # === 修改：使用切片后的数据和固定的时间周期描述 ===
-            html_content = await template.render_async(
-                stock_name=stock.name, stock_id=stock.stock_id,
-                data_period=f"最近 24 小时", # 副标题固定为24小时
-                stock_data=kline_data_for_image # 传递切片后的数据
+            # 调用新的绘图函数，并传入颗粒度
+            screenshot_path = await self._generate_kline_chart_image(
+                kline_data=kline_data_for_image,
+                stock_name=stock.name,
+                stock_id=stock.stock_id,
+                granularity=granularity # <--- 传入新参数
             )
-        except Exception as e:
-            logger.error(f"渲染K线图模板失败: {e}")
-            yield event.plain_result("❌ 渲染K线图模板失败。")
-            return
-
-        # 使用 playwright 将 HTML 转为图片 (后续部分保持不变)
-        temp_html_path = os.path.join(DATA_DIR, f"temp_kline_{stock.stock_id}_{random.randint(1000,9999)}.html")
-        screenshot_path = os.path.join(DATA_DIR, f"kline_{stock.stock_id}_{random.randint(1000,9999)}.png")
-        
-        try:
-            with open(temp_html_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            
-            page = await self.playwright_browser.new_page(viewport={"width": 800, "height": 600})
-            await page.goto(f"file://{os.path.abspath(temp_html_path)}")
-            await page.wait_for_selector("#kline-chart", state="visible", timeout=20000)
-            chart_element = await page.query_selector('#kline-chart')
-            await chart_element.screenshot(path=screenshot_path)
-            await page.close()
             
             yield event.image_result(screenshot_path)
         
-        except PlaywrightError as e:
-            logger.error(f"Playwright 生成K线图失败: {e}")
-            yield event.plain_result("❌ 生成K线图时发生浏览器错误。")
         except Exception as e:
-            logger.error(f"生成K线图过程中发生未知错误: {e}")
+            logger.error(f"使用mplfinance生成K线图过程中发生未知错误: {e}", exc_info=True)
             yield event.plain_result("❌ 生成K线图失败，请稍后重试。")
         finally:
-            # 清理临时文件
-            if os.path.exists(temp_html_path): os.remove(temp_html_path)
-            # 在 yield 之后，截图文件也应被清理
-            if os.path.exists(screenshot_path): os.remove(screenshot_path)
+            if screenshot_path and os.path.exists(screenshot_path):
+                os.remove(screenshot_path)
 
     @filter.command("购买股票", alias={"买入","加仓"})
     async def buy_stock(self, event: AstrMessageEvent, identifier: str, quantity_str: Optional[str] = None):
@@ -939,62 +1006,6 @@ class StockMarketRefactored(Star):
         del self.stocks[stock_id]
         yield event.plain_result(f"🗑️ 已成功删除股票 {stock_name} ({stock_id}) 及其所有持仓和历史数据。")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("设置股票趋势")
-    async def admin_set_trend(self, event: AstrMessageEvent, identifier: str, trend_str: str, duration: int):
-        """[管理员] 强制设定股票在未来一段时间的趋势"""
-        stock = await self.find_stock(identifier)
-        if not stock:
-            yield event.plain_result(f"❌ 操作失败：找不到标识符为 '{identifier}' 的股票。")
-            return
-        
-        try:
-            # 将输入的字符串转换为 Trend 枚举成员
-            trend_mapping = {
-                "看涨": Trend.BULLISH,
-                "看跌": Trend.BEARISH,
-                "盘整": Trend.NEUTRAL,
-                "BULLISH": Trend.BULLISH,  # 英文也支持
-                "BEARISH": Trend.BEARISH,
-                "NEUTRAL": Trend.NEUTRAL,
-            }
- 
-            trend_enum = trend_mapping.get(trend_str)
-            if trend_enum is None:
-                yield event.plain_result("❌ 无效的趋势！请输入 `看涨`, `看跌`, `盘整`, `BULLISH`, `BEARISH`, 或 `NEUTRAL`。")
-                return
- 
-            if duration <= 0:
-                yield event.plain_result("❌ 持续时间（分钟）必须为正整数。")
-                return
- 
-            # 计算延迟生效的时间
-            delay_minutes = 5
-            生效时间 = datetime.now() + timedelta(minutes=delay_minutes)
- 
-            # 将持续时间转换为 5 分钟的 tick 数
-            duration_in_ticks = duration // 5  # 整数除法，向下取整
-            if duration % 5 != 0:
-                duration_in_ticks += 1  # 如果不能整除，则向上取整，确保至少持续指定的时间
- 
-            async def apply_trend():
-                """延迟应用趋势的协程"""
-                # 检查当前时间是否已经到达生效时间
-                等待时间 = (生效时间 - datetime.now()).total_seconds()
-                if 等待时间 > 0:
-                    await asyncio.sleep(等待时间)
- 
-                # 修改与 V5.3 算法对应的日内趋势变量
-                stock.intraday_trend = trend_enum
-                stock.intraday_trend_duration = duration_in_ticks
-                logger.info(f"趋势已于 {datetime.now()} 生效") # 打印生效时间
- 
-            # 创建一个异步任务来延迟应用趋势
-            asyncio.create_task(apply_trend())
-            
-            yield event.plain_result(f"✅ 操作成功！\n已将 {stock.name} 的趋势强制设定为 {trend_str.lower()}，将在 {delay_minutes} 分钟后生效，持续约 {duration} 分钟。")
-        except KeyError:
-            yield event.plain_result("❌ 无效的趋势！请输入 `看涨`, `看跌`, `盘整`, `BULLISH`, `BEARISH`, 或 `NEUTRAL`。")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("修改股票")
@@ -1091,8 +1102,6 @@ class StockMarketRefactored(Star):
         if not stock:
             yield event.plain_result(f"❌ 操作失败：找不到标识符为 '{identifier}' 的股票。")
             return
-
-        # 收集所有需要展示的内部参数
         details = (
             f"--- 股票内部参数详情 ---\n"
             f"股票名称: {stock.name}\n"
@@ -1101,9 +1110,12 @@ class StockMarketRefactored(Star):
             f"--------------------\n"
             f"当前价格: ${stock.current_price:.2f}\n"
             f"波动率 (volatility): {stock.volatility:.4f}\n"
+            f"基本价值 (FV): ${stock.fundamental_value:.2f}\n"
             f"--------------------\n"
-            f"日内趋势: {stock.intraday_trend.name}\n"  
-            f"趋势剩余Tick: {stock.intraday_trend_duration}\n" 
+            f"【动能波系统】\n"
+            f"当前动能值: {stock.intraday_momentum:.4f}\n"
+            f"动能波峰值: {stock.momentum_target_peak:.4f}\n"
+            f"动能波进程: {stock.momentum_current_tick} / {stock.momentum_duration_ticks} (Ticks)\n"
             f"--------------------\n"
             f"内存记录:\n"
             f" - 价格历史点: {len(stock.price_history)} / {stock.price_history.maxlen}\n"

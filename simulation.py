@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, Optional
 from astrbot.api import logger
 from astrbot.api.event import MessageChain
 
+# ▼▼▼【兼容性修改】重新导入 Trend 枚举 ▼▼▼
 from .models import VirtualStock, DailyScript, MarketCycle, DailyBias, Trend
+# ▲▲▲【修改结束】▲▲▲
+
 from .config import NATIVE_EVENT_PROBABILITY_PER_TICK, NATIVE_STOCK_RANDOM_EVENTS, INTRINSIC_VALUE_PRESSURE_FACTOR
 
 if TYPE_CHECKING:
@@ -84,7 +87,11 @@ class MarketSimulation:
         return None
 
     async def _update_stock_prices_loop(self):
-        """后台任务循环，更新股票价格。"""
+        """后台任务循环，更新股票价格 (V2.1 分级动能波)。"""
+        from .config import (BIG_WAVE_PROBABILITY, SMALL_WAVE_PEAK_MIN, SMALL_WAVE_PEAK_MAX,
+                             SMALL_WAVE_TICKS_MIN, SMALL_WAVE_TICKS_MAX, BIG_WAVE_PEAK_MIN,
+                             BIG_WAVE_PEAK_MAX, BIG_WAVE_TICKS_MIN, BIG_WAVE_TICKS_MAX)
+
         while True:
             try:
                 new_status, wait_seconds = self.plugin.get_market_status_and_wait()
@@ -141,20 +148,39 @@ class MarketSimulation:
                         close_price = stock.current_price
                         high_price, low_price = (max(open_price, close_price), min(open_price, close_price))
                     else:
-                        TREND_BREAK_CHANCE = 0.20
-                        if stock.intraday_trend_duration <= 0 or random.random() < TREND_BREAK_CHANCE:
-                            weights = [0.3, 0.4, 0.3]
-                            if script.bias == DailyBias.UP: weights = [0.5, 0.3, 0.2]
-                            elif script.bias == DailyBias.DOWN: weights = [0.2, 0.3, 0.5]
-                            stock.intraday_trend = random.choices([Trend.BULLISH, Trend.NEUTRAL, Trend.BEARISH], weights=weights, k=1)[0]
-                            stock.intraday_trend_duration = random.randint(4, 12)
-                        else:
-                            stock.intraday_trend_duration -= 1
+                        # --- ▼▼▼【核心算法 V2.1】▼▼▼
+                        
+                        if stock.momentum_current_tick >= stock.momentum_duration_ticks:
+                            stock.intraday_momentum = 0.0
+                            stock.momentum_current_tick = 0
+                            stock.momentum_duration_ticks = 0
+
+                        if stock.momentum_duration_ticks == 0 and random.random() < 0.3:
+                            bias = script.bias
+                            weights = [0.6, 0.4] if bias == DailyBias.UP else [0.4, 0.6] if bias == DailyBias.DOWN else [0.5, 0.5]
+                            direction = random.choices([1, -1], weights=weights)[0]
+                            
+                            if random.random() < BIG_WAVE_PROBABILITY:
+                                peak_magnitude = random.uniform(BIG_WAVE_PEAK_MIN, BIG_WAVE_PEAK_MAX)
+                                duration_ticks = random.randint(BIG_WAVE_TICKS_MIN, BIG_WAVE_TICKS_MAX)
+                            else:
+                                peak_magnitude = random.uniform(SMALL_WAVE_PEAK_MIN, SMALL_WAVE_PEAK_MAX)
+                                duration_ticks = random.randint(SMALL_WAVE_TICKS_MIN, SMALL_WAVE_TICKS_MAX)
+
+                            stock.momentum_target_peak = direction * peak_magnitude
+                            stock.momentum_duration_ticks = duration_ticks
+                            stock.momentum_current_tick = 0
+                        
+                        if stock.momentum_duration_ticks > 0:
+                            stock.momentum_current_tick += 1
+                            progress = stock.momentum_current_tick / stock.momentum_duration_ticks
+                            momentum_factor = math.sin(progress * math.pi)
+                            stock.intraday_momentum = stock.momentum_target_peak * momentum_factor
 
                         effective_volatility = script.expected_range_factor / math.sqrt(288) * 2.2
-                        trend_influence = stock.intraday_trend.value * (open_price * effective_volatility) * random.uniform(0.5, 1.5)
-                        random_walk = open_price * effective_volatility * random.normalvariate(0, 1)
-
+                        trend_influence = stock.intraday_momentum * (open_price * effective_volatility) * random.uniform(0.8, 1.2)
+                        random_walk = open_price * effective_volatility * random.normalvariate(0, 0.8)
+                        
                         short_term_reversion_force = 0
                         if len(stock.price_history) >= 5:
                             sma5 = sum(list(stock.price_history)[-5:]) / 5
@@ -163,9 +189,22 @@ class MarketSimulation:
                         intraday_anchor_force = (script.target_close - open_price) / 288 * 0.05
                         pressure_influence = stock.market_pressure * 0.01
                         stock.market_pressure *= 0.95
+                        
                         total_change = trend_influence + random_walk + short_term_reversion_force + intraday_anchor_force + pressure_influence
-
                         close_price = round(max(0.01, open_price + total_change), 2)
+                        
+                        # --- ▲▲▲【核心算法结束】▲▲▲
+                        
+                        # ▼▼▼【兼容层】根据新动能更新旧趋势字段，以兼容main.py ▼▼▼
+                        if stock.intraday_momentum > 0.15:
+                            stock.intraday_trend = Trend.BULLISH
+                        elif stock.intraday_momentum < -0.15:
+                            stock.intraday_trend = Trend.BEARISH
+                        else:
+                            stock.intraday_trend = Trend.NEUTRAL
+                        stock.intraday_trend_duration = max(0, stock.momentum_duration_ticks - stock.momentum_current_tick)
+                        # ▲▲▲【兼容层结束】▲▲▲
+
                         absolute_volatility_base = open_price * (script.expected_range_factor / math.sqrt(288))
                         high_price = round(max(open_price, close_price) + random.uniform(0, absolute_volatility_base * 0.8), 2)
                         low_price = round(max(0.01, min(open_price, close_price) - random.uniform(0, absolute_volatility_base * 0.8)), 2)
