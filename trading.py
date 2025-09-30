@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Tuple, Optional, Dict
 
 from .models import MarketStatus
-# 【最终修正】从 config.py 导入所有需要的常量
 from .config import SELL_LOCK_MINUTES, SELL_FEE_RATE, SLIPPAGE_FACTOR, MAX_SLIPPAGE_DISCOUNT, COST_PRESSURE_FACTOR
 
 if TYPE_CHECKING:
@@ -14,9 +13,14 @@ class TradingManager:
 
     async def perform_buy(self, user_id: str, identifier: str, quantity: int) -> Tuple[bool, str]:
         """执行买入操作的核心内部函数。"""
-        # ... (此方法内部代码无需修改)
-        if self.plugin.market_status != MarketStatus.OPEN:
-            return False, f"⏱️ 当前市场状态为【{self.plugin.market_status.value}】，无法交易。"
+        # ▼▼▼【核心修正】▼▼▼
+        # 不要读取 self.plugin.market_status，因为它可能是过时的。
+        # 直接调用 get_market_status_and_wait() 进行实时检查。
+        current_status, _ = self.plugin.get_market_status_and_wait()
+        if current_status != MarketStatus.OPEN:
+            return False, f"⏱️ 当前市场状态为【{current_status.value}】，无法交易。"
+        # ▲▲▲【修正结束】▲▲▲
+
         if not self.plugin.economy_api:
             return False, "经济系统未启用，无法进行交易！"
         if quantity <= 0:
@@ -37,11 +41,16 @@ class TradingManager:
         return True, (f"✅ 买入成功！\n以 ${stock.current_price:.2f}/股 的价格买入 {quantity} 股 {stock.name}，花费 {cost:.2f} 金币。\n"
                       f"⚠️ 注意：买入的股票将在 {SELL_LOCK_MINUTES} 分钟后解锁，方可卖出。")
 
+
     async def perform_sell(self, user_id: str, identifier: str, quantity_to_sell: int) -> Tuple[bool, str, Optional[Dict]]:
         """执行卖出操作的核心内部函数。"""
-        # ... (此方法内部代码无需修改)
-        if self.plugin.market_status != MarketStatus.OPEN:
-            return False, f"⏱️ 当前市场状态为【{self.plugin.market_status.value}】，无法交易。", None
+        # ▼▼▼【核心修正】▼▼▼
+        current_status, _ = self.plugin.get_market_status_and_wait()
+        if current_status != MarketStatus.OPEN:
+            # 注意：此函数返回三个值，所以这里也要返回三个值 (bool, str, None)
+            return False, f"⏱️ 当前市场状态为【{current_status.value}】，无法交易。", None
+        # ▲▲▲【修正结束】▲▲▲
+
         if not self.plugin.economy_api:
             return False, "经济系统未启用，无法进行交易！", None
         if quantity_to_sell <= 0:
@@ -83,9 +92,12 @@ class TradingManager:
 
     async def perform_buy_all_in(self, user_id: str, identifier: str) -> Tuple[bool, str]:
         """执行梭哈买入操作"""
-        # ... (此方法内部代码无需修改)
-        if self.plugin.market_status != MarketStatus.OPEN:
-            return False, f"⏱️ 当前市场状态为【{self.plugin.market_status.value}】，无法交易。"
+        # ▼▼▼【核心修正】▼▼▼
+        current_status, _ = self.plugin.get_market_status_and_wait()
+        if current_status != MarketStatus.OPEN:
+            return False, f"⏱️ 当前市场状态为【{current_status.value}】，无法交易。"
+        # ▲▲▲【修正结束】▲▲▲
+
         stock = await self.plugin.find_stock(identifier)
         if not stock: return False, f"❌ 找不到标识符为 '{identifier}' 的股票。"
         if stock.current_price <= 0: return False, "❌ 股价异常，无法购买。"
@@ -99,9 +111,12 @@ class TradingManager:
 
     async def perform_sell_all_for_stock(self, user_id: str, identifier: str) -> Tuple[bool, str]:
         """执行全抛单支股票的操作"""
-        # ... (此方法内部代码无需修改)
-        if self.plugin.market_status != MarketStatus.OPEN:
-            return False, f"⏱️ 当前市场状态为【{self.plugin.market_status.value}】，无法交易。"
+        # ▼▼▼【核心修正】▼▼▼
+        current_status, _ = self.plugin.get_market_status_and_wait()
+        if current_status != MarketStatus.OPEN:
+            return False, f"⏱️ 当前市场状态为【{current_status.value}】，无法交易。"
+        # ▲▲▲【修正结束】▲▲▲
+
         stock = await self.plugin.find_stock(identifier)
         if not stock: return False, f"❌ 找不到标识符为 '{identifier}' 的股票。"
         quantity_to_sell = await self.plugin.db_manager.get_sellable_quantity(user_id, stock.stock_id)
@@ -112,9 +127,12 @@ class TradingManager:
 
     async def perform_sell_all_portfolio(self, user_id: str) -> Tuple[bool, str]:
         """执行清仓操作"""
-        # ... (此方法内部代码无需修改)
-        if self.plugin.market_status != MarketStatus.OPEN:
-            return False, f"⏱️ 当前市场状态为【{self.plugin.market_status.value}】，无法交易。"
+        # ▼▼▼【核心修正】▼▼▼
+        current_status, _ = self.plugin.get_market_status_and_wait()
+        if current_status != MarketStatus.OPEN:
+            return False, f"⏱️ 当前市场状态为【{current_status.value}】，无法交易。"
+        # ▲▲▲【修正结束】▲▲▲
+
         sellable_stocks = await self.plugin.db_manager.get_sellable_portfolio(user_id)
         if not sellable_stocks:
             return False, "您当前没有可供卖出的持仓。"
@@ -123,6 +141,7 @@ class TradingManager:
         for stock_id, quantity_to_sell in sellable_stocks:
             stock = self.plugin.stocks.get(stock_id)
             if not stock: continue
+            # perform_sell 内部已经有实时检查了，这里理论上可以不加，但为了逻辑清晰和保险起见，保留顶层检查。
             success, _, result_data = await self.perform_sell(user_id, stock_id, quantity_to_sell)
             if success:
                 total_net_income += result_data["net_income"]

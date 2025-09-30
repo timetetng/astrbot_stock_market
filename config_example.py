@@ -12,13 +12,13 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 # --- Web服务配置 ---
 # !!! 重要：请将这里的 IP 地址换成您服务器的公网IP !!!
 SERVER_PUBLIC_IP = ""
-SERVER_PORT = 
+SERVER_PORT = 30005
 SERVER_BASE_URL = f"http://{SERVER_PUBLIC_IP}:{SERVER_PORT}"
-# API 无速率限制白名单
+
 RATE_LIMIT_WHITELIST = [
     "127.0.0.1",       # 本地回环地址
     "192.168.1.0/24",  # 局域网192.168.1.0 到 192.168.1.255 范围内的地址
-    "10.8.0.0/24"    # Wireguard VPN 默认地址范围
+    "10.8.0.0/24"    # wireguard VPN 默认地址范围
 ]
 # --- API 安全与JWT认证 ---
 JWT_SECRET_KEY = "4d+/vzSlO9EsdI0/4oEtpS7wkfORC9JJd5fBvGJXEgYkym3jpPmozvvqTIVnXYC1cqdWpfMxfN7G+t1nJWau+g=="
@@ -35,6 +35,20 @@ SELL_FEE_RATE = 0.01  # 卖出手续费率 1%
 # 交易滑点配置
 SLIPPAGE_FACTOR = 0.0000005  # 用于计算大额订单对价格的冲击
 MAX_SLIPPAGE_DISCOUNT = 0.3  # 最大滑点为30%
+# 分级动能波
+BIG_WAVE_PROBABILITY = 0.03  # 每次尝试生成新波段时，是“大波段”的概率 (例如3%)
+
+# “小波段”参数 (常规波动)
+SMALL_WAVE_PEAK_MIN = 0.4    # 峰值范围
+SMALL_WAVE_PEAK_MAX = 0.8
+SMALL_WAVE_TICKS_MIN = 5     # 持续tick范围 (25-60分钟)
+SMALL_WAVE_TICKS_MAX = 12
+
+# “大波段”参数 (主升/主跌)
+BIG_WAVE_PEAK_MIN = 1.0      # 峰值范围 (强度显著更高)
+BIG_WAVE_PEAK_MAX = 1.6
+BIG_WAVE_TICKS_MIN = 12     # 持续tick范围 (1-2小时)
+BIG_WAVE_TICKS_MAX = 24
 
 # 玩家交易对市场压力的影响
 COST_PRESSURE_FACTOR = 0.0000005  # 交易额转换为市场压力点数的系数

@@ -95,6 +95,7 @@ class MarketSimulation:
         while True:
             try:
                 new_status, wait_seconds = self.plugin.get_market_status_and_wait()
+                self.plugin.market_status = new_status
                 if new_status != self.plugin.market_status:
                     logger.info(f"市场状态变更: {self.plugin.market_status.value} -> {new_status.value}")
                     self.plugin.market_status = new_status

@@ -301,7 +301,7 @@ class StockMarketRefactored(Star):
                 ylabel='Price ($)',
                 figsize=(20, 12),
                 datetime_format='%m/%d %H:%M',
-                mav=(5, 10),
+                mav=(5, 10,30),
                 returnfig=True
             )
             
