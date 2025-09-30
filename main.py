@@ -37,6 +37,7 @@ from .database import DatabaseManager
 from .simulation import MarketSimulation
 from .trading import TradingManager
 from .web_server import WebServer
+from .treemap_generator import create_market_treemap
 
 jinja_env = Environment(loader=FileSystemLoader(TEMPLATES_DIR), autoescape=True, enable_async=True)
 
@@ -519,6 +520,7 @@ class StockMarketRefactored(Star):
             reply += f"[{i}]{stock.stock_id.ljust(5)}{stock.name.ljust(6)}{emoji}${stock.current_price:<8.2f}({price_change_percent:+.2f}%)\n"
         
         reply += "----------------------\n"
+        reply += "使用 /大盘云图 查看市场概况\n"
         reply += "使用 /行情 <编号/代码/名称> 查看详细信息"
         yield event.plain_result(reply)
 
@@ -735,6 +737,35 @@ class StockMarketRefactored(Star):
         finally:
             if screenshot_path and os.path.exists(screenshot_path):
                 os.remove(screenshot_path)
+
+    @filter.command("大盘云图", alias={"云图","大盘"})
+    async def market_treemap(self, event: AstrMessageEvent):
+        """生成并显示当前市场的30分钟大盘云图"""
+        await self._ready_event.wait()
+        
+        image_path = ""
+        try:
+            yield event.plain_result("正在生成基于30分钟行情的大盘云图，请稍候...")
+            
+            image_path = await create_market_treemap(
+                db_path=self.db_path, 
+                output_dir=os.path.join(DATA_DIR)
+            )
+            
+            if image_path:
+                yield event.image_result(image_path)
+            else:
+                yield event.plain_result("抱歉，生成大盘云图失败，可能是数据不足或系统错误。")
+
+        except Exception as e:
+            logger.error(f"处理 /大盘云图 命令时发生错误: {e}", exc_info=True)
+            yield event.plain_result("处理您的请求时遇到内部错误，请稍后重试。")
+        finally:
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception as e:
+                    logger.error(f"删除大盘云图临时文件 {image_path} 失败: {e}")
 
     @filter.command("购买股票", alias={"买入","加仓"})
     async def buy_stock(self, event: AstrMessageEvent, identifier: str, quantity_str: Optional[str] = None):
