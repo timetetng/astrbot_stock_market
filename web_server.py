@@ -1,11 +1,9 @@
-# stock_market/web_server.py
-
 import json
 import jwt
 import random
 import time
 import re
-import ipaddress  # <--- 1. 引入 ipaddress 模块
+import ipaddress
 from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Deque
@@ -15,11 +13,9 @@ from aiohttp import web
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from astrbot.api import logger
-# ▼▼▼ 2. 从配置中导入新增的白名单列表 ▼▼▼
-from .config import (TEMPLATES_DIR, STATIC_DIR, SERVER_PORT, 
-                     SERVER_BASE_URL, JWT_SECRET_KEY, JWT_ALGORITHM, 
+from .config import (TEMPLATES_DIR, STATIC_DIR, SERVER_PORT,
+                     SERVER_BASE_URL, JWT_SECRET_KEY, JWT_ALGORITHM,
                      JWT_EXPIRATION_MINUTES, RATE_LIMIT_WHITELIST)
-# ▲▲▲ 导入结束 ▲▲▲
 from .utils import jwt_required, generate_user_hash, pwd_context
 
 if TYPE_CHECKING:
@@ -31,8 +27,8 @@ async def rate_limit_middleware(request: web.Request, handler):
     一个原生的 aiohttp 速率限制中间件 (升级版：支持正则表达式路径匹配和IP白名单)。
     """
     server_instance = request.app['server_instance']
-    
-    # ▼▼▼ 3. 检查IP白名单 ▼▼▼
+
+    # 检查IP白名单
     # 在执行任何速率限制逻辑之前，首先检查请求的IP是否在白名单中。
     remote_ip = request.remote
     if remote_ip:
@@ -48,21 +44,20 @@ async def rate_limit_middleware(request: web.Request, handler):
         except ValueError as e:
             # 如果配置中的白名单格式错误或IP地址无效，记录日志但服务不中断
             logger.error(f"处理速率限制白名单时出错: {e}. 请检查 config.py 中的 RATE_LIMIT_WHITELIST 配置。")
-    # ▲▲▲ IP白名单检查结束 ▲▲▲
-    
+
     # (原有的速率限制逻辑保持不变)
     for rule in server_instance.rate_limit_rules:
         if re.match(rule['path_regex'], request.path):
             key = rule['get_key_func'](request)
             limit = rule['limit']
             period = rule['period']
-            
+
             current_time = time.monotonic()
             timestamps: Deque[float] = server_instance.rate_limit_storage.setdefault(key, deque())
-            
+
             while timestamps and timestamps[0] <= current_time - period:
                 timestamps.popleft()
-            
+
             if len(timestamps) >= limit:
                 logger.warning(f"速率限制触发！Key: '{key}', Path: '{request.path}', Rule: {rule['path_regex']}")
                 return web.Response(
@@ -70,13 +65,12 @@ async def rate_limit_middleware(request: web.Request, handler):
                     text=json.dumps({"error": "Too Many Requests", "message": "Rate limit exceeded."}),
                     content_type="application/json"
                 )
-            
+
             timestamps.append(current_time)
             break
-            
+
     return await handler(request)
 
-# --- WebServer 类的其他部分保持完全不变 ---
 class WebServer:
     def _get_ip_key(self, request: web.Request) -> str:
         """根据请求者的 IP 地址生成 Key"""
@@ -90,28 +84,25 @@ class WebServer:
 
     def __init__(self, plugin: "StockMarketRefactored"):
         self.plugin = plugin
-        
+
         self.app = web.Application(middlewares=[rate_limit_middleware])
         self.app['server_instance'] = self
 
         self.rate_limit_storage: Dict[str, Deque[float]] = {}
-        
-        # 规则列表保持不变
+
         self.rate_limit_rules = [
             {'path_regex': r'^/api/auth/.*', 'limit': 10, 'period': 60, 'get_key_func': self._get_ip_key},
             {'path_regex': r'^/api/v1/trade/.*', 'limit': 30, 'period': 60, 'get_key_func': self._get_user_key},
             {'path_regex': r'^/api/v1/stock/[^/]+/details$', 'limit': 5, 'period': 60, 'get_key_func': self._get_ip_key},
             {'path_regex': r'^/api/.*', 'limit': 60, 'period': 60, 'get_key_func': self._get_ip_key}
         ]
-        
+
         self.runner = None
         self._setup_jinja_and_routes()
 
-    # ... (文件余下的所有代码都与您提供的一致，无需任何修改)
-    
     def _setup_jinja_and_routes(self):
         """配置Jinja2环境和所有Web路由。"""
-        
+
         def tojson_filter(obj):
             """一个更强大的 tojson 过滤器，用于模板渲染。"""
             return json.dumps(obj, ensure_ascii=False)
@@ -124,14 +115,14 @@ class WebServer:
             context_processors=[aiohttp_jinja2.request_processor],
             filters={'tojson': tojson_filter}
         )
-        
+
         self.app.router.add_static('/static/', path=STATIC_DIR, name='static')
-        
-        # --- 子应用的路由定义保持完全不变 ---
+
         api_v1 = web.Application()
         api_v1.router.add_get('/stock/{stock_id}', self._api_get_stock_info)
         api_v1.router.add_get('/stock/{identifier}/details', self._api_get_stock_details)
         api_v1.router.add_get('/stocks', self._api_get_all_stocks)
+        api_v1.router.add_get('/market/overview', self._api_get_market_overview)
         api_v1.router.add_get('/portfolio', self._api_get_user_portfolio)
         api_v1.router.add_post('/trade/buy', self._api_trade_buy)
         api_v1.router.add_post('/trade/sell', self._api_trade_sell)
@@ -146,6 +137,9 @@ class WebServer:
         auth_app.router.add_post('/login', self._api_auth_login)
         auth_app.router.add_post('/forgot-password', self._api_auth_forgot_password)
         auth_app.router.add_post('/reset-password', self._api_auth_reset_password)
+        # ▼▼▼ 新增路由：用于已登录用户获取自己的Token ▼▼▼
+        auth_app.router.add_get('/me/token', self._api_get_my_token)
+        # ▲▲▲ 新增路由结束 ▲▲▲
         self.app.add_subapp('/api/auth', auth_app)
 
         self.app.router.add_get('/charts/{user_hash}', self._handle_user_charts_page)
@@ -203,8 +197,6 @@ class WebServer:
         if not stock or len(stock.kline_history) < 2:
             return web.json_response({'error': 'not found'}, status=404)
 
-        # ▼▼▼【核心修改】根据周期决定数据切片和聚合粒度 ▼▼▼
-        
         points_map = {
             '1d': 288,
             '7d': 288 * 7,
@@ -212,36 +204,32 @@ class WebServer:
         }
         num_points = points_map.get(period, 288)
         kline_history_slice = list(stock.kline_history)[-num_points:]
-        
+
         final_kline_data = kline_history_slice
-        
-        # 定义聚合规则
+
         resample_rule = None
         if period == '30d':
             resample_rule = 'H' # 30天聚合为小时K
         elif period == '7d':
             resample_rule = '30T' # 7天聚合为30分钟K
 
-        # 如果需要聚合
         if resample_rule and len(kline_history_slice) > 0:
             logger.info(f"为 {stock_id} 请求 {period} 数据，开始聚合为 {resample_rule} K线...")
-            
+
             df = pd.DataFrame(kline_history_slice)
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
-            
+
             df_resampled = df.resample(resample_rule).agg({
                 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
             }).dropna()
-            
+
             aggregated_kline_history = [
                 {"date": index.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close}
                 for index, row in df_resampled.iterrows()
             ]
             final_kline_data = aggregated_kline_history
             logger.info(f"聚合完成，数据点从 {len(kline_history_slice)} 减少到 {len(final_kline_data)}。")
-
-        # ▲▲▲【修改结束】▲▲▲
 
         target_user_id = None
         if user_hash:
@@ -250,15 +238,14 @@ class WebServer:
                 if generate_user_hash(uid) == user_hash:
                     target_user_id = uid
                     break
-        
+
         user_holdings = []
         if target_user_id:
             asset_info = await self.plugin.get_user_total_asset(target_user_id)
-            # 修正 Bug: 'hold_detailed' 应为 'holdings_detailed'
             for holding in asset_info.get('holdings_detailed', []):
                 if holding['stock_id'] == stock_id:
                     user_holdings.append({"stock_id": stock_id, "quantity": holding['quantity'], "avg_cost": holding['avg_cost']})
-        
+
         return web.json_response({"kline_history": final_kline_data, "user_holdings": user_holdings})
 
     async def _handle_get_user_hash(self, request: web.Request):
@@ -283,6 +270,65 @@ class WebServer:
         if not stock_details:
             return web.json_response({'error': f'Stock with identifier "{identifier}" not found'}, status=404)
         return web.json_response(stock_details)
+
+    async def _api_get_all_stocks(self, request: web.Request):
+        stock_list = [{'stock_id': s.stock_id, 'name': s.name, 'current_price': s.current_price}
+                      for s in sorted(self.plugin.stocks.values(), key=lambda x: x.stock_id)]
+        return web.json_response(stock_list)
+
+    async def _api_get_market_overview(self, request: web.Request):
+        """[API][Public] 获取市场所有股票的详细行情概览。"""
+        market_data = []
+
+        for stock in self.plugin.stocks.values():
+            kline = list(stock.kline_history)
+
+            high_1h = None
+            low_1h = None
+            ma5 = None
+            change_5m_value = None
+            change_5m_percent = None
+            trend = "数据不足"
+
+            if kline:
+                candles_last_hour = kline[-12:]
+                high_1h = max(p['high'] for p in candles_last_hour)
+                low_1h = min(p['low'] for p in candles_last_hour)
+
+            if len(kline) >= 5:
+                last_5_closes = [p['close'] for p in kline[-5:]]
+                ma5 = sum(last_5_closes) / len(last_5_closes)
+                
+                if stock.current_price > ma5:
+                    trend = "上涨"
+                elif stock.current_price < ma5:
+                    trend = "下跌"
+                else:
+                    trend = "震荡"
+
+            if kline:
+                price_5m_ago = kline[-1]['close']
+                if price_5m_ago > 0:
+                    change_5m_value = stock.current_price - price_5m_ago
+                    change_5m_percent = (change_5m_value / price_5m_ago) * 100
+            
+            stock_info = {
+                '股票名称': stock.name,
+                '代码': stock.stock_id,
+                '当前价格': stock.current_price,
+                '1小时内最高价': high_1h,
+                '1小时内最低价': low_1h,
+                '5周期均线': ma5,
+                '较5分钟前涨跌': {
+                    'value': change_5m_value,
+                    'percent': change_5m_percent
+                },
+                '短期趋势': trend,
+            }
+            market_data.append(stock_info)
+
+        sorted_market_data = sorted(market_data, key=lambda x: x['代码'])
+        return web.json_response(sorted_market_data)
 
     @jwt_required
     async def _api_trade_buy_all_in(self, request: web.Request):
@@ -330,11 +376,6 @@ class WebServer:
             user_id_for_log = request.get('jwt_payload', {}).get('sub', '未知用户')
             logger.error(f"获取用户 {user_id_for_log} 持仓时出错: {e}", exc_info=True)
             return web.json_response({'error': '获取持仓信息时发生内部错误'}, status=500)
-
-    async def _api_get_all_stocks(self, request: web.Request):
-        stock_list = [{'stock_id': s.stock_id, 'name': s.name, 'current_price': s.current_price}
-                      for s in sorted(self.plugin.stocks.values(), key=lambda x: x.stock_id)]
-        return web.json_response(stock_list)
 
 
     async def _api_get_ranking(self, request: web.Request):
@@ -396,16 +437,38 @@ class WebServer:
 
             if not user_record or not pwd_context.verify(password, user_record['password_hash']):
                 return web.json_response({'error': '登录名或密码错误'}, status=401)
-            
+
             qq_user_id = user_record['user_id']
             expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES)
             payload = {'sub': qq_user_id, 'login_id': login_id, 'exp': expire}
             token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-            
+
             return web.json_response({'access_token': token, 'token_type': 'bearer', 'user_id': qq_user_id, 'login_id': login_id})
         except Exception as e:
             logger.error(f"登录时发生错误: {e}", exc_info=True)
             return web.json_response({'error': '服务器内部错误'}, status=500)
+    
+    # ▼▼▼ 新增API方法：获取当前用户的Token ▼▼▼
+    @jwt_required
+    async def _api_get_my_token(self, request: web.Request):
+        """
+        [API][Private] 获取当前认证用户正在使用的JWT。
+        用户必须在请求的Authorization头中提供一个有效的Bearer Token。
+        """
+        try:
+            auth_header = request.headers.get('Authorization')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                # 理论上jwt_required已经检查过，这里是双重保险
+                return web.json_response({'error': '无效的Authorization头'}, status=401)
+            
+            # 从 "Bearer <token>" 中提取 <token>
+            token = auth_header.split(' ')[1]
+            
+            return web.json_response({'access_token': token, 'token_type': 'bearer'})
+        except Exception as e:
+            logger.error(f"为用户 {request.get('jwt_payload', {}).get('sub', '未知')} 获取Token时出错: {e}", exc_info=True)
+            return web.json_response({'error': '获取Token时发生内部错误'}, status=500)
+    # ▲▲▲ 新增API方法结束 ▲▲▲
 
     async def _api_auth_forgot_password(self, request: web.Request):
         """API: 发起忘记密码请求，返回验证码。"""
@@ -417,7 +480,8 @@ class WebServer:
 
             user_record = await self.plugin.db_manager.get_user_by_login_id(login_id)
             if not user_record:
-                return web.json_response({'error': '如果该用户存在，重置指令已发送'}, status=404)
+                # 出于安全考虑，不明确提示用户是否存在
+                return web.json_response({'error': '如果该用户存在，重置指令已发送'}, status=200)
 
             qq_user_id = user_record['user_id']
             code = f"{random.randint(100000, 999999)}"
@@ -431,6 +495,7 @@ class WebServer:
                 'verified': False
             }
             logger.info(f"为登录ID '{login_id}' (QQ: {qq_user_id}) 生成了密码重置码: {code}")
+            # 返回给前端，用于后续验证
             return web.json_response({'success': True, 'reset_code': code})
         except Exception as e:
             logger.error(f"发起忘记密码请求时出错: {e}", exc_info=True)

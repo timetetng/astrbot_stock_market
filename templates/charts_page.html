@@ -43,7 +43,18 @@
             <a href="#" class="forgot-password-link" onclick="openForgotPasswordModal()">忘记密码?</a>
         </div>
     </div>
-
+    
+    <div id="token-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('token-modal')">&times;</span>
+            <h2>您的API Token</h2>
+            <p>请妥善保管您的Token，不要泄露给他人。</p>
+            <div class="modal-form-group">
+                <textarea id="api-token-display" readonly rows="4"></textarea>
+            </div>
+            <button class="modal-button" onclick="copyTokenToClipboard()">复制到剪贴板</button>
+        </div>
+    </div>
     <div id="forgot-password-modal" class="modal">
         <div class="modal-content" id="forgot-password-content">
             <span class="close-button" onclick="closeModal('forgot-password-modal')">&times;</span>
@@ -63,6 +74,7 @@
                 <div class="auth-buttons">
                     <button id="login-btn" onclick="openModal('login-modal')">登录</button>
                     <button id="register-btn" onclick="openModal('register-modal')">注册</button>
+                    <button id="get-token-btn" style="display:none;" onclick="handleGetMyToken()">获取Token</button>
                     <button id="logout-btn" style="display:none;" onclick="handleLogout()">退出</button>
                 </div>
             </div>

@@ -17,17 +17,17 @@ function renderChart(stockName, stockId, klineData) {
     const dates = klineData.kline_history.map(item => item.date);
     const klineValues = klineData.kline_history.map(item => [item.open, item.close, item.low, item.high]);
 
-    // ▼▼▼【核心修改】计算MA均线数据 ▼▼▼
+    // 计算MA均线数据
     function calculateMA(dayCount, data) {
         let result = [];
         for (let i = 0, len = data.length; i < len; i++) {
             if (i < dayCount - 1) {
-                result.push('-'); // 前面的数据不足，无法计算，用'-'占位
+                result.push('-');
                 continue;
             }
             let sum = 0;
             for (let j = 0; j < dayCount; j++) {
-                sum += parseFloat(data[i - j][1]); // data[x][1] 是收盘价, 使用parseFloat确保是数字
+                sum += parseFloat(data[i - j][1]);
             }
             result.push((sum / dayCount).toFixed(2));
         }
@@ -36,7 +36,6 @@ function renderChart(stockName, stockId, klineData) {
     
     const ma5Data = calculateMA(5, klineValues);
     const ma10Data = calculateMA(10, klineValues);
-    // ▲▲▲【修改结束】▲▲▲
 
     const isMobile = window.innerWidth < 768;
     let gridOption = isMobile ? { left: 50, right: 15, bottom: 80, top: 55 } : { left: '8%', right: '8%', bottom: '20%', top: '15%' };
@@ -110,6 +109,7 @@ function updateUIForAuthState() {
     const loginBtn = document.getElementById('login-btn');
     const registerBtn = document.getElementById('register-btn');
     const logoutBtn = document.getElementById('logout-btn');
+    const getTokenBtn = document.getElementById('get-token-btn'); // 新增
     const userInfoDisp = document.getElementById('user-info-display');
     const tradePanel = document.getElementById('trade-panel');
     const tradePanelTitle = document.getElementById('trade-panel-title');
@@ -117,6 +117,7 @@ function updateUIForAuthState() {
         loginBtn.style.display = 'none';
         registerBtn.style.display = 'none';
         logoutBtn.style.display = 'inline-block';
+        getTokenBtn.style.display = 'inline-block'; // 新增：登录后显示按钮
         const loginId = localStorage.getItem('loginId') || currentUserId;
         userInfoDisp.innerText = `欢迎, ${loginId}`;
         tradePanel.classList.add('active');
@@ -131,6 +132,7 @@ function updateUIForAuthState() {
         loginBtn.style.display = 'inline-block';
         registerBtn.style.display = 'inline-block';
         logoutBtn.style.display = 'none';
+        getTokenBtn.style.display = 'none'; // 新增：未登录时隐藏按钮
         userInfoDisp.innerText = '访客模式';
         tradePanel.classList.remove('active');
         tradePanelTitle.innerText = '请先登录以进行交易';
@@ -183,6 +185,44 @@ function handleLogout() {
     showToast('已退出登录。');
     window.location.href = window.location.pathname;
 }
+
+// ▼▼▼ 新增：获取并显示Token的函数 ▼▼▼
+async function handleGetMyToken() {
+    if (!isLoggedIn || !authToken) {
+        showToast('请先登录', 'error');
+        return;
+    }
+    try {
+        const response = await fetch('/api/auth/me/token', {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        const result = await response.json();
+        if (response.ok && result.access_token) {
+            document.getElementById('api-token-display').value = result.access_token;
+            openModal('token-modal');
+        } else {
+            throw new Error(result.error || '获取Token失败');
+        }
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+function copyTokenToClipboard() {
+    const tokenTextarea = document.getElementById('api-token-display');
+    tokenTextarea.select();
+    tokenTextarea.setSelectionRange(0, 99999); // For mobile devices
+    try {
+        document.execCommand('copy');
+        showToast('Token已成功复制到剪贴板！', 'success');
+    } catch (err) {
+        showToast('复制失败，请手动复制', 'error');
+    }
+    closeModal('token-modal');
+}
+// ▲▲▲ 新增函数结束 ▲▲▲
 
 async function handleTrade(type) { if (!isLoggedIn) { showToast('请先登录再进行交易', 'error'); openModal('login-modal'); return; } const stockId = window.location.hash.substring(1); const quantity = parseInt(document.getElementById('trade-quantity').value, 10); if (!stockId) { showToast('请先选择一支股票', 'error'); return; } if (isNaN(quantity) || quantity <= 0) { showToast('请输入有效的交易数量', 'error'); return; } const stockName = allStocks.find(s => s.stock_id === stockId)?.name || stockId; if (!confirm(`您确定要【${type === 'buy' ? '买入' : '卖出'}】 ${quantity} 股 ${stockName} 吗？`)) { return; } const endpoint = `/api/v1/trade/${type}`; try { const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` }, body: JSON.stringify({ stock_id: stockId, quantity: quantity }) }); const result = await response.json(); if (response.ok && result.success) { showToast(result.message, 'success'); document.getElementById('trade-quantity').value = ''; await refreshPortfolioData(); } else { throw new Error(result.message || result.error || '交易失败'); } } catch (error) { showToast(error.message, 'error'); } }
 
@@ -237,7 +277,6 @@ async function handleResetPassword(loginId, resetCode) {
 
 // --- 初始化 ---
 document.addEventListener('DOMContentLoaded', () => {
-    // 关键修改：从HTML的data属性中读取Jinja2变量
     const scriptTag = document.getElementById('main-script');
     initialUserHash = scriptTag.dataset.userHash;
     allStocks = JSON.parse(scriptTag.dataset.stocks);
