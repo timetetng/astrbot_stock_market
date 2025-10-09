@@ -1,5 +1,5 @@
 # stock_market/main.py
-
+import json
 import asyncio
 import os
 from pathlib import Path
@@ -31,7 +31,7 @@ except (ImportError, AttributeError):
 # --- 内部模块导入 ---
 from .config import DATA_DIR, TEMPLATES_DIR, SERVER_PUBLIC_IP, SERVER_PORT, T_OPEN, T_CLOSE, SELL_LOCK_MINUTES, DEFAULT_LISTED_COMPANY_VOLATILITY, EARNINGS_SENSITIVITY_FACTOR, INTRINSIC_VALUE_PRESSURE_FACTOR
 from .models import VirtualStock, MarketSimulator, MarketStatus
-from .utils import format_large_number, generate_user_hash
+from .utils import format_large_number, generate_user_hash, get_price_change_percentage_30m, get_stock_price_history_24h
 from .api import StockMarketAPI
 from .database import DatabaseManager
 from .simulation import MarketSimulation
@@ -1506,3 +1506,223 @@ class StockMarketRefactored(Star):
 # /修改股票 ASTR volatility 0.045  #波动率
 
 # """
+
+# ----------------------------
+    # LLM Function Tools (带有日志记录的最终版)
+    # ----------------------------
+
+@filter.llm_tool(name="get_market_overview")
+async def llm_get_market_overview(self, event: AstrMessageEvent):
+    """
+    获取当前股票市场的整体概览信息。你应该使用这些数据向用户总结市场的宏观动态，例如哪些板块/股票在上涨或下跌。
+
+    Args:
+        None
+    """
+    logger.info("LLM 工具 [get_market_overview] 被调用。")
+    try:
+        # ... (函数体代码保持不变) ...
+        stocks = list(self.stocks.values())
+        if not stocks:
+            logger.warning("LLM 工具 [get_market_overview]: 市场中没有股票数据。")
+            return {"error": "市场中没有可用的股票数据。"}
+        market_data = []
+        for stock in stocks:
+            price_change_30m = get_price_change_percentage_30m(stock)
+            trend = "上涨" if price_change_30m > 0 else "下跌" if price_change_30m < 0 else "持平"
+            market_data.append({
+                "name": stock.name,
+                "code": stock.stock_id,
+                "price": f"{stock.current_price:.2f}",
+                "change_30m_percent": f"{price_change_30m:.2f}",
+                "trend": trend
+            })
+        logger.info(f"LLM 工具 [get_market_overview] 成功执行，将数据返回给LLM进行处理。")
+        return market_data
+    except Exception as e:
+        logger.error(f"LLM 工具 [get_market_overview] 执行出错: {e}", exc_info=True)
+        return {"error": "获取市场概览时发生内部错误。"}
+
+@filter.llm_tool(name="get_stock_detail")
+async def llm_get_stock_detail(self, event: AstrMessageEvent, stock_code: str):
+    """
+    获取指定股票的详细数据，包括当前价格和24小时价格历史。你应该基于返回的数据为用户解读关键信息，例如识别近期的高点/低点、价格波动范围等。
+
+    Args:
+        stock_code(string): 需要查询的股票代码或名称。
+    """
+    logger.info(f"LLM 工具 [get_stock_detail] 被调用，参数 stock_code: {stock_code}")
+    try:
+        # ... (函数体代码保持不变) ...
+        stock = await self.find_stock(stock_code)
+        if not stock:
+            logger.warning(f"LLM 工具 [get_stock_detail]: 找不到股票 {stock_code}。")
+            return {"error": f"找不到代码或名称为 '{stock_code}' 的股票。"}
+        history = get_stock_price_history_24h(stock)
+        detail_data = {
+            "name": stock.name,
+            "code": stock.stock_id,
+            "price": f"{stock.current_price:.2f}",
+            "24h_history_hourly": [(ts.strftime('%H:%M'), f"{price:.2f}") for ts, price in history]
+        }
+        logger.info(f"LLM 工具 [get_stock_detail] 成功执行，将为'{stock_code}'的数据返回给LLM。")
+        return detail_data
+    except Exception as e:
+        logger.error(f"LLM 工具 [get_stock_detail] 执行出错: {e}", exc_info=True)
+        return {"error": "获取股票详情时发生内部错误。"}
+
+@filter.llm_tool(name="get_user_portfolio")
+async def llm_get_user_portfolio(self, event: AstrMessageEvent):
+    """
+    查询当前玩家的游戏持仓和现金余额。你应该使用这些信息为玩家总结其资产状况，例如总市值、总盈亏，并可以结合市场行情给出操作建议。
+
+    Args:
+        None
+    """
+    logger.info(f"LLM 工具 [get_user_portfolio] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        portfolio_task = self.db_manager.get_user_holdings_aggregated(user_id)
+        balance_task = self.economy_api.get_coins(user_id)
+        portfolio, balance = await asyncio.gather(portfolio_task, balance_task)
+        if not portfolio:
+            logger.info(f"LLM 工具 [get_user_portfolio]: 用户 {user_id} 无持仓。")
+            return {
+                "cash_balance": f"{balance:.2f}",
+                "holdings": [], 
+                "summary": {"total_market_value": "0.00", "total_pnl": "0.00"}
+            }
+        holdings_data = []
+        total_value = 0
+        total_pnl = 0
+        for stock_id, holding_info in portfolio.items():
+            stock = self.stocks.get(stock_id)
+            if stock:
+                quantity = holding_info['quantity']
+                market_value = quantity * stock.current_price
+                total_value += market_value
+                cost_basis = holding_info['cost_basis']
+                pnl = market_value - cost_basis
+                total_pnl += pnl
+                pnl_percent = (pnl / cost_basis) * 100 if cost_basis > 0 else 0
+                holdings_data.append({
+                    "name": stock.name, "code": stock_id, "shares": quantity,
+                    "market_value": f"{market_value:.2f}", "pnl": f"{pnl:+.2f}", "pnl_percent": f"{pnl_percent:+.2f}"
+                })
+        result_data = {
+            "cash_balance": f"{balance:.2f}",
+            "holdings": holdings_data,
+            "summary": {"total_market_value": f"{total_value:.2f}", "total_pnl": f"{total_pnl:+.2f}"}
+        }
+        logger.info(f"LLM 工具 [get_user_portfolio] 成功执行，数据已返回给LLM。")
+        return result_data
+    except Exception as e:
+        logger.error(f"LLM 工具 [get_user_portfolio] 执行出错: {e}", exc_info=True)
+        return {"error": "查询用户持仓时发生内部错误。"}
+
+
+@filter.llm_tool(name="get_user_assets")
+async def llm_get_user_assets(self, event: AstrMessageEvent):
+    """
+    查询当前玩家在游戏中的现金余额。
+
+    Args:
+        None
+    """
+    logger.info(f"LLM 工具 [get_user_assets] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        balance = await self.economy_api.get_coins(user_id)
+        result_data = {"cash_balance": f"{balance:.2f}"}
+        logger.info(f"LLM 工具 [get_user_assets] 成功执行，数据: {result_data}")
+        return result_data
+    except Exception as e:
+        logger.error(f"LLM 工具 [get_user_assets] 执行出错: {e}", exc_info=True)
+        return {"error": "查询用户现金余额时发生内部错误。"}
+
+@filter.llm_tool(name="buy_stock")
+async def llm_buy_stock(self, event: AstrMessageEvent, stock_code: str, shares: int):
+    """
+    为当前玩家执行购买指定数量股票的游戏操作。这是一个最终执行动作，在调用前必须先向玩家提议并获得明确同意。
+
+    Args:
+        stock_code(string): 要购买的股票代码或名称。
+        shares(number): 希望购买的股票数量。
+    """
+    logger.info(f"LLM 工具 [buy_stock] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        success, message = await self.trading_manager.perform_buy(user_id, stock_code, shares)
+        result = {"success": success, "action": "buy", "message": message}
+        logger.info(f"LLM 工具 [buy_stock] 成功执行，结果: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"LLM 工具 [buy_stock] 执行出错: {e}", exc_info=True)
+        return {"success": False, "message": "执行购买操作时发生内部错误。"}
+
+@filter.llm_tool(name="sell_stock")
+async def llm_sell_stock(self, event: AstrMessageEvent, stock_code: str, shares: int):
+    """
+    为当前玩家执行出售指定数量股票的游戏操作。这是一个最终执行动作，在调用前必须先向玩家提议并获得明确同意。
+
+    Args:
+        stock_code(string): 要出售的股票代码或名称。
+        shares(number): 希望出售的股票数量。
+    """
+    logger.info(f"LLM 工具 [sell_stock] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        success, message, data = await self.trading_manager.perform_sell(user_id, stock_code, shares)
+        result = {"success": success, "action": "sell", "message": message, "details": data or {}}
+        logger.info(f"LLM 工具 [sell_stock] 成功执行，结果: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"LLM 工具 [sell_stock] 执行出错: {e}", exc_info=True)
+        return {"success": False, "message": "执行出售操作时发生内部错误。"}
+
+@filter.llm_tool(name="all_in_stock")
+async def llm_all_in_stock(self, event: AstrMessageEvent, stock_code: str):
+    """
+    为当前玩家执行梭哈（用全部现金购买某支股票）的游戏操作。此为高风险操作，在调用前必须明确告知玩家风险并获得其同意。
+
+    Args:
+        stock_code(string): 要梭哈的股票代码或名称。
+    """
+    logger.info(f"LLM 工具 [all_in_stock] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        success, message = await self.trading_manager.perform_buy_all_in(user_id, stock_code)
+        result = {"success": success, "action": "all_in", "message": message}
+        logger.info(f"LLM 工具 [all_in_stock] 成功执行，结果: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"LLM 工具 [all_in_stock] 执行出错: {e}", exc_info=True)
+        return {"success": False, "message": "执行梭哈操作时发生内部错误。"}
+
+@filter.llm_tool(name="sell_all_stocks")
+async def llm_sell_all_stocks(self, event: AstrMessageEvent, stock_code: str = None):
+    """
+    为当前玩家执行清仓（卖出所有持仓）或全抛（卖出单支股票的全部）的游戏操作。此为高风险操作，在调用前必须明确告知玩家风险并获得其同意。
+
+    Args:
+        stock_code(string, optional): 要全抛的单支股票代码。若不提供，则为清仓。
+    """
+    logger.info(f"LLM 工具 [sell_all_stocks] 被调用...")
+    try:
+        # ... (函数体代码保持不变) ...
+        user_id = event.get_sender_id()
+        if stock_code:
+            success, message = await self.trading_manager.perform_sell_all_for_stock(user_id, stock_code)
+        else:
+            success, message = await self.trading_manager.perform_sell_all_portfolio(user_id)
+        result = {"success": success, "action": "sell_all", "message": message}
+        logger.info(f"LLM 工具 [sell_all_stocks] 成功执行，结果: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"LLM 工具 [sell_all_stocks] 执行出错: {e}", exc_info=True)
+        return {"success": False, "message": "执行清仓/全抛操作时发生内部错误。"}
