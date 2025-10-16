@@ -193,6 +193,12 @@ class WebServer:
         stock_id = request.match_info.get('stock_id', "").upper()
         user_hash = request.query.get('user_hash')
         period = request.query.get('period', '1d')
+
+        try:
+            padding = int(request.query.get('padding', '0'))
+        except (ValueError, TypeError):
+            padding = 0
+
         stock = await self.plugin.find_stock(stock_id)
         if not stock or len(stock.kline_history) < 2:
             return web.json_response({'error': 'not found'}, status=404)
@@ -203,18 +209,19 @@ class WebServer:
             '30d': 288 * 30
         }
         num_points = points_map.get(period, 288)
-        kline_history_slice = list(stock.kline_history)[-num_points:]
+        total_points = num_points + padding
+        kline_history_slice = list(stock.kline_history)[-total_points:]
 
         final_kline_data = kline_history_slice
 
         resample_rule = None
         if period == '30d':
-            resample_rule = 'H' # 30天聚合为小时K
+            resample_rule = 'H'
         elif period == '7d':
-            resample_rule = '30T' # 7天聚合为30分钟K
+            resample_rule = '30T'
 
         if resample_rule and len(kline_history_slice) > 0:
-            logger.info(f"为 {stock_id} 请求 {period} 数据，开始聚合为 {resample_rule} K线...")
+            logger.info(f"为 {stock_id} 请求 {period} 数据 (padding={padding})，开始聚合为 {resample_rule} K线...")
 
             df = pd.DataFrame(kline_history_slice)
             df['date'] = pd.to_datetime(df['date'])
@@ -224,15 +231,26 @@ class WebServer:
                 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
             }).dropna()
 
-            aggregated_kline_history = [
-                {"date": index.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close}
-                for index, row in df_resampled.iterrows()
-            ]
-            final_kline_data = aggregated_kline_history
-            logger.info(f"聚合完成，数据点从 {len(kline_history_slice)} 减少到 {len(final_kline_data)}。")
+            # ▼▼▼ 核心修复逻辑 ▼▼▼
+            # 判断聚合和丢弃空值后，是否还有剩余数据
+            if df_resampled.empty:
+                # 如果聚合后数据为空，说明历史数据太稀疏，无法支撑当前时间维度的聚合。
+                # 作为备用方案，我们返回未聚合的原始数据，确保前端不会收到空列表。
+                logger.warning(f"聚合后数据为空！为 {stock_id} 在 {period} 周期回退到原始K线数据。")
+                final_kline_data = kline_history_slice # final_kline_data 已默认为此，这里为清晰起见
+            else:
+                # 如果有数据，则正常处理
+                aggregated_kline_history = [
+                    {"date": index.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close}
+                    for index, row in df_resampled.iterrows()
+                ]
+                final_kline_data = aggregated_kline_history
+                logger.info(f"聚合完成，数据点从 {len(kline_history_slice)} 减少到 {len(final_kline_data)}。")
+            # ▲▲▲ 修复结束 ▲▲▲
 
         target_user_id = None
         if user_hash:
+            # ... (后续代码无需修改) ...
             all_user_ids = await self.plugin.db_manager.get_all_user_ids_with_holdings()
             for uid in all_user_ids:
                 if generate_user_hash(uid) == user_hash:
@@ -447,8 +465,7 @@ class WebServer:
         except Exception as e:
             logger.error(f"登录时发生错误: {e}", exc_info=True)
             return web.json_response({'error': '服务器内部错误'}, status=500)
-    
-    # ▼▼▼ 新增API方法：获取当前用户的Token ▼▼▼
+
     @jwt_required
     async def _api_get_my_token(self, request: web.Request):
         """
@@ -468,7 +485,6 @@ class WebServer:
         except Exception as e:
             logger.error(f"为用户 {request.get('jwt_payload', {}).get('sub', '未知')} 获取Token时出错: {e}", exc_info=True)
             return web.json_response({'error': '获取Token时发生内部错误'}, status=500)
-    # ▲▲▲ 新增API方法结束 ▲▲▲
 
     async def _api_auth_forgot_password(self, request: web.Request):
         """API: 发起忘记密码请求，返回验证码。"""

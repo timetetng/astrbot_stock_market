@@ -18,6 +18,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, message_components as Comp
 from astrbot.api.event import MessageEventResult
+from ..common.forwarder import Forwarder
 try:
     from ..common.services import shared_services
 except (ImportError, AttributeError):
@@ -29,7 +30,7 @@ except (ImportError, AttributeError):
     logger.warning("未能从 common.services 导入共享API服务，插件功能将受限。")
 
 # --- 内部模块导入 ---
-from .config import DATA_DIR, TEMPLATES_DIR, SERVER_PUBLIC_IP, SERVER_PORT, T_OPEN, T_CLOSE, SELL_LOCK_MINUTES, DEFAULT_LISTED_COMPANY_VOLATILITY, EARNINGS_SENSITIVITY_FACTOR, INTRINSIC_VALUE_PRESSURE_FACTOR
+from .config import DATA_DIR, TEMPLATES_DIR, SERVER_BASE_URL, SERVER_PUBLIC_IP, SERVER_PORT, IS_SERVER_DOMAIN, SERVER_DOMAIN, T_OPEN, T_CLOSE, SELL_LOCK_MINUTES, DEFAULT_LISTED_COMPANY_VOLATILITY, EARNINGS_SENSITIVITY_FACTOR, INTRINSIC_VALUE_PRESSURE_FACTOR
 from .models import VirtualStock, MarketSimulator, MarketStatus
 from .utils import format_large_number, generate_user_hash, get_price_change_percentage_30m, get_stock_price_history_24h
 from .api import StockMarketAPI
@@ -58,7 +59,7 @@ class StockMarketRefactored(Star):
         self.economy_api = None
         self.nickname_api = None
         self.bank_api = None
-
+        self.forwarder = Forwarder()
         # --- 浏览器实例 ---
         self.playwright_browser: Optional[Browser] = None
         
@@ -1374,7 +1375,7 @@ class StockMarketRefactored(Star):
             logger.error(f"获取总资产排行榜失败: {e}", exc_info=True)
             yield event.plain_result("排行榜不见了喵~ 可能是服务出了点小问题。")
 
-    @filter.command("webK线", alias={"webk", "webk线", "webK线图"})
+    @filter.command("webk", alias={"webk线", "webK线图"})
     async def show_kline_chart_web(self, event: AstrMessageEvent, identifier: Optional[str] = None):
         """显示所有股票的K线图Web版，可指定默认显示的股票，并为用户生成专属链接"""
         await self._ready_event.wait()
@@ -1385,9 +1386,11 @@ class StockMarketRefactored(Star):
         user_id = event.get_sender_id()
         current_user_hash = generate_user_hash(user_id)
 
-        # 【最终修正】直接使用从 config.py 导入的变量
-        base_url = f"https://stock.leewater.online/charts/{current_user_hash}"
-
+        if IS_SERVER_DOMAIN:
+            base_url = f"{SERVER_DOMAIN}/charts/{current_user_hash}"
+        else:
+            base_url = f"{SERVER_BASE_URL}/charts/{current_user_hash}"
+        
         if identifier:
             stock = await self.find_stock(identifier)
             if not stock:

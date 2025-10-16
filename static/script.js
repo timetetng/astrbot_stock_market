@@ -13,11 +13,12 @@ function renderChart(stockName, stockId, klineData) {
     const periodMap = { '1d': '最近 288 K线', '7d': '最近 2016 K线', '30d': '最近 30 天 (小时K)' };
     const dataPeriod = periodMap[currentPeriod] || '自定义周期';
 
-    // 1. 准备基础K线数据
-    const dates = klineData.kline_history.map(item => item.date);
-    const klineValues = klineData.kline_history.map(item => [item.open, item.close, item.low, item.high]);
+    // 定义将在图表中使用的最终数据变量
+    let dates, klineValues, ma5Data, ma10Data, ma30Data;
+    
+    const all_kline_history = klineData.kline_history || [];
 
-    // 计算MA均线数据
+    // 计算MA均线的辅助函数
     function calculateMA(dayCount, data) {
         let result = [];
         for (let i = 0, len = data.length; i < len; i++) {
@@ -33,9 +34,36 @@ function renderChart(stockName, stockId, klineData) {
         }
         return result;
     }
-    
-    const ma5Data = calculateMA(5, klineValues);
-    const ma10Data = calculateMA(10, klineValues);
+
+    // ▼▼▼ 核心修改：根据当前周期选择不同的数据处理方式 ▼▼▼
+    if (currentPeriod === '1d') {
+        // --- 仅对 1D 视图执行 padding 数据处理逻辑 ---
+        const padding = 29;
+        
+        const all_dates = all_kline_history.map(item => item.date);
+        const all_klineValues = all_kline_history.map(item => [item.open, item.close, item.low, item.high]);
+        
+        const ma5Data_full = calculateMA(5, all_klineValues);
+        const ma10Data_full = calculateMA(10, all_klineValues);
+        const ma30Data_full = calculateMA(30, all_klineValues);
+        
+        const hasPaddingData = all_dates.length > padding;
+
+        dates = hasPaddingData ? all_dates.slice(padding) : all_dates;
+        klineValues = hasPaddingData ? all_klineValues.slice(padding) : all_klineValues;
+        ma5Data = hasPaddingData ? ma5Data_full.slice(padding) : ma5Data_full;
+        ma10Data = hasPaddingData ? ma10Data_full.slice(padding) : ma10Data_full;
+        ma30Data = hasPaddingData ? ma30Data_full.slice(padding) : ma30Data_full;
+
+    } else {
+        // --- 对 7D 和 30D 视图使用原始的、不带 padding 的处理逻辑 ---
+        dates = all_kline_history.map(item => item.date);
+        klineValues = all_kline_history.map(item => [item.open, item.close, item.low, item.high]);
+        ma5Data = calculateMA(5, klineValues);
+        ma10Data = calculateMA(10, klineValues);
+        ma30Data = calculateMA(30, klineValues);
+    }
+    // ▲▲▲ 修改结束 ▲▲▲
 
     const isMobile = window.innerWidth < 768;
     let gridOption = isMobile ? { left: 50, right: 15, bottom: 80, top: 55 } : { left: '8%', right: '8%', bottom: '20%', top: '15%' };
@@ -47,12 +75,13 @@ function renderChart(stockName, stockId, klineData) {
         avgCostLine.push({ name: '平均成本', yAxis: holding.avg_cost, lineStyle: { color: '#00ccff', type: 'dashed' }, label: { formatter: '{b}: {c}', position: 'insideEndTop', color: '#00ccff' } });
     }
     
+    // ECharts option 配置 (这部分无需修改)
     const option = {
         backgroundColor: 'transparent',
         title: { text: `${stockName} (${stockId})`, subtext: dataPeriod, left: 'center', textStyle: { color: '#e0e0e0' }, subtextStyle: { color: '#888' } },
         tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: function (params) { var param = params[0]; if (!param || param.seriesType !== 'candlestick') return ''; var values = klineValues[param.dataIndex]; var date = new Date(param.name); var formattedTime = ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2); var formattedDate = (date.getMonth() + 1) + '/' + date.getDate(); return `${param.seriesName}<br/>时间: ${formattedDate} ${formattedTime}<br/>` + `<strong>开盘:</strong> ${values[0]}<br/><strong>收盘:</strong> ${values[1]}<br/>` + `<strong>最低:</strong> ${values[2]}<br/><strong>最高:</strong> ${values[3]}`; } },
         legend: {
-            data: ['K线', 'MA5', 'MA10'],
+            data: ['K线', 'MA5', 'MA10', 'MA30'],
             inactiveColor: '#777',
             textStyle: { color: '#e0e0e0' },
             bottom: isMobile ? '45px' : '40px'
@@ -64,7 +93,8 @@ function renderChart(stockName, stockId, klineData) {
         series: [
             { type: 'candlestick', name: 'K线', data: klineValues, itemStyle: { color: '#ef232a', color0: '#14b143', borderColor: '#ef232a', borderColor0: '#14b143' }, markLine: { symbol: 'none', data: avgCostLine } },
             { name: 'MA5', type: 'line', data: ma5Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#FFFFFF', width: 1.0 } },
-            { name: 'MA10', type: 'line', data: ma10Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#ff60ff', width: 1.0 } }
+            { name: 'MA10', type: 'line', data: ma10Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#ff60ff', width: 1.0 } },
+            { name: 'MA30', type: 'line', data: ma30Data, smooth: true, showSymbol: false, lineStyle: { opacity: 0.8, color: '#ffd700', width: 1.0 } }
         ]
     };
     if (myChart) myChart.setOption(option, true);
@@ -94,6 +124,8 @@ async function switchStock(stockId) {
         renderChart(stock.name, stockId, responseData);
     } catch (error) {
         console.error('Failed to fetch kline data:', error);
+        const padding = 49; 
+        const fetchUrl = `/api/kline/${stockId}?period=${currentPeriod}&user_hash=${currentUserHashForKline}&padding=${padding}`;        
         if (myChart) myChart.showLoading({ text: '数据加载失败' });
     } finally {
         if (myChart) myChart.hideLoading();
@@ -294,4 +326,10 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(() => { const stockId = window.location.hash.substring(1); if (stockId && document.hasFocus()) { const cacheKey = `${currentUserHashForKline}_${stockId}_${currentPeriod}`; delete klineDataCache[cacheKey]; switchStock(stockId); } }, 2.5 * 60 * 1000);
 });
 
-window.onclick = function (event) { if (event.target.classList.contains('modal')) { closeModal(event.target.id); } }
+// ▼▼▼ BUG修复：将 onclick 更换为 onmousedown ▼▼▼
+window.onmousedown = function (event) {
+    // 只有当鼠标直接在灰色背景（.modal元素）上按下时，才关闭弹窗
+    if (event.target.classList.contains('modal')) {
+        closeModal(event.target.id);
+    }
+}

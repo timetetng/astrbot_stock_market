@@ -1,4 +1,4 @@
-# stock_market_v2/api.py
+# plugins/astrbot_stock_market/api.py
 
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 

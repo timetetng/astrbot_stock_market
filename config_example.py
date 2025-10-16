@@ -10,11 +10,15 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 # --- Web服务配置 ---
-# !!! 重要：请将这里的 IP 地址换成您服务器的公网IP !!!
-SERVER_PUBLIC_IP = ""
+# !!! 重要：请将这里的 IP 地址换成您服务器IP !!!
+SERVER_PUBLIC_IP = "127.0.0.1"
 SERVER_PORT = 30005
 SERVER_BASE_URL = f"http://{SERVER_PUBLIC_IP}:{SERVER_PORT}"
+# 是否使用域名
+IS_SERVER_DOMAIN = False
+SERVER_DOMAIN = "https://example.domain"
 
+# webAPI速率白名单
 RATE_LIMIT_WHITELIST = [
     "127.0.0.1",       # 本地回环地址
     "192.168.1.0/24",  # 局域网192.168.1.0 到 192.168.1.255 范围内的地址
