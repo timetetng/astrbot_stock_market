@@ -137,10 +137,13 @@ class WebServer:
         auth_app.router.add_post('/login', self._api_auth_login)
         auth_app.router.add_post('/forgot-password', self._api_auth_forgot_password)
         auth_app.router.add_post('/reset-password', self._api_auth_reset_password)
-        # ▼▼▼ 新增路由：用于已登录用户获取自己的Token ▼▼▼
         auth_app.router.add_get('/me/token', self._api_get_my_token)
-        # ▲▲▲ 新增路由结束 ▲▲▲
         self.app.add_subapp('/api/auth', auth_app)
+
+        # ▼▼▼ 新增根目录路由 ▼▼▼
+        # 将根目录 / 指向新的游客模式处理函数
+        self.app.router.add_get('/', self._handle_root_page)
+        # ▲▲▲ 新增路由结束 ▲▲▲
 
         self.app.router.add_get('/charts/{user_hash}', self._handle_user_charts_page)
         self.app.router.add_get('/api/kline/{stock_id}', self._handle_kline_api)
@@ -164,6 +167,25 @@ class WebServer:
             await self.runner.cleanup()
             logger.info("Web服务已关闭。")
 
+    @aiohttp_jinja2.template('charts_page.html')
+    async def _handle_root_page(self, request: web.Request):
+        """处理根目录 / 的请求，展示游客模式的图表页面。"""
+        # 1. 获取所有股票列表，用于下拉菜单
+        stocks_list = sorted([
+            {'stock_id': s.stock_id, 'name': s.name} 
+            for s in self.plugin.stocks.values()
+        ], key=lambda x: x['stock_id'])
+        
+        # 2. 在游客模式下，user_hash 和 user_portfolio_data 均为 None
+        # 模板 charts_page.html 会自动处理 user_hash 为 None 的情况（即游客模式）
+        user_hash = None
+        user_portfolio_data = None
+
+        return {
+            'stocks': stocks_list, 
+            'user_hash': user_hash, 
+            'user_portfolio_data': user_portfolio_data
+        }
 
     @aiohttp_jinja2.template('charts_page.html')
     async def _handle_user_charts_page(self, request: web.Request):
