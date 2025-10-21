@@ -35,7 +35,7 @@ function renderChart(stockName, stockId, klineData) {
         return result;
     }
 
-    // ▼▼▼ 核心修改：根据当前周期选择不同的数据处理方式 ▼▼▼
+    // 根据当前周期选择不同的数据处理方式
     if (currentPeriod === '1d') {
         // --- 仅对 1D 视图执行 padding 数据处理逻辑 ---
         const padding = 29;
@@ -218,7 +218,7 @@ function handleLogout() {
     window.location.href = window.location.pathname;
 }
 
-// ▼▼▼ 新增：获取并显示Token的函数 ▼▼▼
+// 获取并显示Token的函数
 async function handleGetMyToken() {
     if (!isLoggedIn || !authToken) {
         showToast('请先登录', 'error');
@@ -254,7 +254,6 @@ function copyTokenToClipboard() {
     }
     closeModal('token-modal');
 }
-// ▲▲▲ 新增函数结束 ▲▲▲
 
 async function handleTrade(type) { if (!isLoggedIn) { showToast('请先登录再进行交易', 'error'); openModal('login-modal'); return; } const stockId = window.location.hash.substring(1); const quantity = parseInt(document.getElementById('trade-quantity').value, 10); if (!stockId) { showToast('请先选择一支股票', 'error'); return; } if (isNaN(quantity) || quantity <= 0) { showToast('请输入有效的交易数量', 'error'); return; } const stockName = allStocks.find(s => s.stock_id === stockId)?.name || stockId; if (!confirm(`您确定要【${type === 'buy' ? '买入' : '卖出'}】 ${quantity} 股 ${stockName} 吗？`)) { return; } const endpoint = `/api/v1/trade/${type}`; try { const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` }, body: JSON.stringify({ stock_id: stockId, quantity: quantity }) }); const result = await response.json(); if (response.ok && result.success) { showToast(result.message, 'success'); document.getElementById('trade-quantity').value = ''; await refreshPortfolioData(); } else { throw new Error(result.message || result.error || '交易失败'); } } catch (error) { showToast(error.message, 'error'); } }
 
@@ -326,7 +325,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(() => { const stockId = window.location.hash.substring(1); if (stockId && document.hasFocus()) { const cacheKey = `${currentUserHashForKline}_${stockId}_${currentPeriod}`; delete klineDataCache[cacheKey]; switchStock(stockId); } }, 2.5 * 60 * 1000);
 });
 
-// ▼▼▼ BUG修复：将 onclick 更换为 onmousedown ▼▼▼
 window.onmousedown = function (event) {
     // 只有当鼠标直接在灰色背景（.modal元素）上按下时，才关闭弹窗
     if (event.target.classList.contains('modal')) {

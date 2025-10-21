@@ -117,4 +117,3 @@ html, body {
     .right-panel { width: 100%; flex-grow: 0; }
     .chart-container { flex-grow: 0; height: 70vw; min-height: 300px; }
 }
-
