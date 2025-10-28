@@ -31,11 +31,11 @@ class MarketMaker:
         self.counter_trade_intensity = config_dict.get('COUNTER_TRADE_INTENSITY', 0.3)
         self.pressure_threshold = config_dict.get('MARKET_PRESSURE_THRESHOLD', 50000)
 
-        # ====== 【新增】做局系统配置 ======
-        self.rig_probability = 0.10  # 每次tick做局概率10%
-        self.rig_cooldown = 20  # 做局后冷却20个tick (约3小时)
-        self.max_rig_pressure = 200  # 做局时最大压力值
-        self.trap_duration = 10  # 做局持续10个tick
+        # ====== 【修复】做局系统配置 ======
+        self.rig_probability = 0.02  # 每次tick做局概率2%（从10%降至2%）
+        self.rig_cooldown = 60  # 做局后冷却60个tick (约5小时，从20提升到60)
+        self.max_rig_pressure = 50  # 做局时最大压力值（从200降至50，减少75%）
+        self.trap_duration = 5  # 做局持续5个tick（从10降至5，减少50%）
 
         # 做局状态跟踪
         self.rig_state = {}  # 状态: None, 'trapping_up', 'trapping_down', 'harvesting', 'cooling'
@@ -80,7 +80,7 @@ class MarketMaker:
             if rig_state == 'trapping_up':
                 # 阶段1: 做局拉高，制造假突破
                 trap_pressure = (self.max_rig_pressure * 0.6) + (rig_progress * 5)
-                price_impact += trap_pressure * self.base_impact * 5
+                price_impact += trap_pressure * self.base_impact * 2  # 降低影响倍数（从5降至2）
                 current_position += trap_pressure
                 rig_progress += 1
 
@@ -93,7 +93,7 @@ class MarketMaker:
             elif rig_state == 'trapping_down':
                 # 阶段1: 做局打压，制造假跌破
                 trap_pressure = (self.max_rig_pressure * 0.6) + (rig_progress * 5)
-                price_impact -= trap_pressure * self.base_impact * 5
+                price_impact -= trap_pressure * self.base_impact * 2  # 降低影响倍数（从5降至2）
                 current_position -= trap_pressure
                 rig_progress += 1
 
@@ -105,7 +105,7 @@ class MarketMaker:
             elif rig_state == 'harvesting_up':
                 # 阶段2: 收割 - 拉高后快速砸盘出货
                 harvest_pressure = self.max_rig_pressure
-                price_impact -= harvest_pressure * self.base_impact * 8  # 强力砸盘
+                price_impact -= harvest_pressure * self.base_impact * 3  # 降低影响倍数（从8降至3）
                 current_position -= harvest_pressure
                 rig_progress += 1
 
@@ -118,7 +118,7 @@ class MarketMaker:
             elif rig_state == 'harvesting_down':
                 # 阶段2: 收割 - 打压后快速拉起吸筹
                 harvest_pressure = self.max_rig_pressure
-                price_impact += harvest_pressure * self.base_impact * 8  # 强力拉升
+                price_impact += harvest_pressure * self.base_impact * 3  # 降低影响倍数（从8降至3）
                 current_position += harvest_pressure
                 rig_progress += 1
 
@@ -168,11 +168,12 @@ class MarketMaker:
                 elif len(stock.price_history) >= 5:
                     recent_prices = list(stock.price_history)[-5:]
                     if len(recent_prices) >= 2:
-                        price_change = (current_price - recent_prices[-2]) / recent_prices[-2]
+                        # 修复：使用最近两个tick的收盘价进行比较，避免开盘价与收盘价混合计算
+                        price_change = (recent_prices[-1] - recent_prices[-2]) / recent_prices[-2]
                         # 如果近一个tick跌幅>10%，庄家继续砸盘
                         if price_change < -0.10:
-                            dip_pressure = min(300, abs(market_pressure) + 50)
-                            price_impact -= dip_pressure * self.base_impact * 3
+                            dip_pressure = min(100, abs(market_pressure) + 20)  # 降低做空压力（从300降至100）
+                            price_impact -= dip_pressure * self.base_impact * 2  # 降低影响倍数（从3降至2）
                             current_position -= dip_pressure
                             logger.info(f"[庄家] {stock.name}({stock_id}) 打击抄底: 继续砸盘，跌幅{price_change:.1%}")
 
