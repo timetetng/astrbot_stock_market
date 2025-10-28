@@ -1,0 +1,24 @@
+# Web服务器与HTTP
+aiohttp>=3.8.0
+aiohttp-jinja2>=3.1.0
+jinja2>=3.1.0
+
+# 数据库
+aiosqlite>=0.19.0
+
+# 数据处理与分析
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 图表绘制
+matplotlib>=3.7.0
+mplfinance>=0.12.9
+squarify>=0.4.3
+
+# 浏览器自动化
+playwright>=1.40.0
+
+# 安全与认证
+cryptography>=41.0.0
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
