@@ -43,3 +43,12 @@ class StockMarketAPI:
 
     async def get_total_asset_ranking(self, limit: int = 10) -> List[Dict[str, Any]]:
         return await self._plugin.get_total_asset_ranking(limit)
+
+    # ====== 【新增】增发机制API ======
+    async def handle_dilution(self, ticker: str, new_shares_to_issue: int) -> bool:
+        """处理股票增发"""
+        return await self._plugin.handle_stock_dilution(ticker, new_shares_to_issue)
+
+    async def get_current_total_shares(self, ticker: str) -> Optional[int]:
+        """获取股票当前总股本"""
+        return await self._plugin.get_current_total_shares(ticker)

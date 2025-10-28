@@ -67,6 +67,24 @@ class DatabaseManager:
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 );""")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_holdings_user_stock ON holdings (user_id, stock_id);")
+
+                # ======【新增交易记录表】======
+                await db.execute("""
+                CREATE TABLE IF NOT EXISTS trade_records (
+                    trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    stock_id TEXT NOT NULL,
+                    trade_type TEXT NOT NULL,  -- 'buy' or 'sell'
+                    quantity INTEGER NOT NULL,
+                    price_per_share REAL NOT NULL,
+                    total_amount REAL NOT NULL,
+                    fee REAL NOT NULL DEFAULT 0,
+                    timestamp TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (stock_id) REFERENCES stocks(stock_id) ON DELETE CASCADE
+                );""")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_user ON trade_records (user_id, timestamp);")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_stock ON trade_records (stock_id, timestamp);")
                 
                 await db.execute("CREATE TABLE IF NOT EXISTS subscriptions (umo TEXT PRIMARY KEY NOT NULL);")
 
@@ -383,4 +401,80 @@ class DatabaseManager:
         """[DB] 移除一个订阅者。"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM subscriptions WHERE umo = ?", (umo,))
+            await db.commit()
+
+    # ======【新增交易记录管理方法】======
+
+    async def record_trade(self, user_id: str, stock_id: str, trade_type: str,
+                          quantity: int, price_per_share: float, total_amount: float, fee: float):
+        """记录一笔交易"""
+        timestamp = datetime.now().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO trade_records (user_id, stock_id, trade_type, quantity, price_per_share, total_amount, fee, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, stock_id, trade_type, quantity, price_per_share, total_amount, fee, timestamp)
+            )
+            await db.commit()
+
+    async def get_user_trading_volume(self, user_id: str, target_date: datetime.date) -> float:
+        """获取用户指定日期的交易总额"""
+        start_time = target_date.isoformat()
+        end_time = (target_date + timedelta(days=1)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT SUM(total_amount) FROM trade_records WHERE user_id = ? AND timestamp >= ? AND timestamp < ?",
+                (user_id, start_time, end_time)
+            )
+            result = await cursor.fetchone()
+            return float(result[0]) if result and result[0] else 0.0
+
+    async def get_stock_trading_volume(self, stock_id: str, target_date: datetime.date) -> float:
+        """获取股票指定日期的交易总额"""
+        start_time = target_date.isoformat()
+        end_time = (target_date + timedelta(days=1)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT SUM(total_amount) FROM trade_records WHERE stock_id = ? AND timestamp >= ? AND timestamp < ?",
+                (stock_id, start_time, end_time)
+            )
+            result = await cursor.fetchone()
+            return float(result[0]) if result and result[0] else 0.0
+
+    async def get_user_recent_trade_count(self, user_id: str, hours: int = 1) -> int:
+        """获取用户最近N小时内的交易次数"""
+        cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM trade_records WHERE user_id = ? AND timestamp >= ?",
+                (user_id, cutoff_time)
+            )
+            result = await cursor.fetchone()
+            return int(result[0]) if result else 0
+
+    # ====== 【新增】股票管理方法 ======
+
+    async def add_stock(self, stock: VirtualStock):
+        """添加新股票"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO stocks (stock_id, name, current_price, volatility, industry, is_listed_company, owner_id, total_shares, market_pressure, fundamental_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (stock.stock_id, stock.name, stock.current_price, stock.volatility, stock.industry,
+                 stock.is_listed_company, stock.owner_id, stock.total_shares, stock.market_pressure,
+                 stock.fundamental_value)
+            )
+            await db.commit()
+
+    async def update_stock_total_shares(self, stock_id: str, new_total_shares: int):
+        """更新股票总股本"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE stocks SET total_shares = ? WHERE stock_id = ?",
+                (new_total_shares, stock_id)
+            )
+            await db.commit()
+
+    async def remove_stock(self, stock_id: str):
+        """删除股票"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM stocks WHERE stock_id = ?", (stock_id,))
             await db.commit()

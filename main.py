@@ -1729,3 +1729,192 @@ async def llm_sell_all_stocks(self, event: AstrMessageEvent, stock_code: str = N
     except Exception as e:
         logger.error(f"LLM 工具 [sell_all_stocks] 执行出错: {e}", exc_info=True)
         return {"success": False, "message": "执行清仓/全抛操作时发生内部错误。"}
+
+    # ================== 【API方法】股票注册与增发 ==================
+
+    async def api_register_stock(self, ticker: str, company_name: str, initial_price: float,
+                                total_shares: int, owner_id: str) -> bool:
+        """[API] 注册一支新股票（公司IPO）"""
+        try:
+            if ticker in self.stocks:
+                logger.warning(f"股票代码 {ticker} 已存在，注册失败")
+                return False
+
+            # 创建新股票
+            stock = VirtualStock(
+                stock_id=ticker,
+                name=company_name,
+                current_price=initial_price,
+                volatility=0.025,  # 上市公司默认波动率较低
+                industry="上市公司",
+                previous_close=initial_price,
+                fundamental_value=initial_price,
+                is_listed_company=True,
+                owner_id=owner_id,
+                total_shares=total_shares,
+                market_pressure=0.0
+            )
+
+            # 保存到内存和数据库
+            self.stocks[ticker] = stock
+            await self.db_manager.add_stock(stock)
+
+            logger.info(f"[IPO] {company_name}({ticker}) 上市成功，发行价 ${initial_price:.2f}，总股本 {total_shares:,} 股")
+            return True
+
+        except Exception as e:
+            logger.error(f"注册股票失败: {e}", exc_info=True)
+            return False
+
+    async def handle_stock_dilution(self, ticker: str, new_shares_to_issue: int) -> bool:
+        """[API] 处理股票增发（动态稀释）"""
+        try:
+            if ticker not in self.stocks:
+                logger.error(f"股票 {ticker} 不存在，增发失败")
+                return False
+
+            stock = self.stocks[ticker]
+
+            # 计算新的总股本
+            old_total_shares = stock.total_shares
+            new_total_shares = old_total_shares + new_shares_to_issue
+
+            # 更新股票总股本
+            stock.total_shares = new_total_shares
+
+            # 更新数据库
+            await self.db_manager.update_stock_total_shares(ticker, new_total_shares)
+
+            logger.info(f"[增发] {stock.name}({ticker}) 增发 {new_shares_to_issue:,} 股，"
+                       f"总股本从 {old_total_shares:,} 增至 {new_total_shares:,}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"股票增发失败: {e}", exc_info=True)
+            return False
+
+    async def get_current_total_shares(self, ticker: str) -> Optional[int]:
+        """[API] 获取股票当前总股本"""
+        try:
+            if ticker not in self.stocks:
+                return None
+            return self.stocks[ticker].total_shares
+        except Exception as e:
+            logger.error(f"获取总股本失败: {e}", exc_info=True)
+            return None
+
+    # ================== 【API方法】股票信息查询 ==================
+
+    async def api_get_stock_price(self, ticker: str) -> Optional[float]:
+        """[API] 获取股票当前价格"""
+        try:
+            if ticker not in self.stocks:
+                return None
+            return self.stocks[ticker].current_price
+        except Exception as e:
+            logger.error(f"获取股票价格失败: {e}", exc_info=True)
+            return None
+
+    async def api_is_ticker_available(self, ticker: str) -> bool:
+        """[API] 检查股票代码是否可用"""
+        return ticker not in self.stocks
+
+    async def api_delist_stock(self, ticker: str) -> bool:
+        """[API] 退市股票"""
+        try:
+            if ticker not in self.stocks:
+                return False
+
+            stock = self.stocks[ticker]
+
+            # 从内存中移除
+            del self.stocks[ticker]
+
+            # 从数据库中删除
+            await self.db_manager.remove_stock(ticker)
+
+            logger.info(f"[退市] {stock.name}({ticker}) 已退市")
+            return True
+
+        except Exception as e:
+            logger.error(f"退市失败: {e}", exc_info=True)
+            return False
+
+    async def api_get_market_cap(self, ticker: str) -> Optional[float]:
+        """[API] 获取股票市值"""
+        try:
+            if ticker not in self.stocks:
+                return None
+            stock = self.stocks[ticker]
+            return stock.current_price * stock.total_shares
+        except Exception as e:
+            logger.error(f"获取市值失败: {e}", exc_info=True)
+            return None
+
+    async def api_set_intrinsic_value(self, ticker: str, value: float):
+        """[API] 设置股票内在价值"""
+        try:
+            if ticker in self.stocks:
+                self.stocks[ticker].fundamental_value = value
+        except Exception as e:
+            logger.error(f"设置内在价值失败: {e}", exc_info=True)
+
+    async def api_report_earnings(self, ticker: str, performance_modifier: float):
+        """[API] 报告财报业绩"""
+        # 这个方法可以用来更新内在价值
+        try:
+            if ticker in self.stocks:
+                stock = self.stocks[ticker]
+                # 根据业绩调整内在价值
+                adjustment = performance_modifier
+                stock.fundamental_value *= (1 + (adjustment - 1) * 0.5)  # 业绩影响减半
+                logger.info(f"[财报] {stock.name}({ticker}) 业绩调整因子: {performance_modifier:.2f}")
+        except Exception as e:
+            logger.error(f"报告财报失败: {e}", exc_info=True)
+
+    async def api_report_event(self, ticker: str, price_impact_percentage: float):
+        """[API] 报告市场事件"""
+        try:
+            if ticker in self.stocks:
+                stock = self.stocks[ticker]
+                # 应用事件影响
+                new_price = stock.current_price * (1 + price_impact_percentage)
+                stock.current_price = max(0.01, new_price)
+                logger.info(f"[事件] {stock.name}({ticker}) 价格变动: {price_impact_percentage:+.2%}")
+        except Exception as e:
+            logger.error(f"报告事件失败: {e}", exc_info=True)
+
+    async def get_user_total_asset(self, user_id: str) -> Dict[str, Any]:
+        """[API] 获取用户总资产"""
+        try:
+            # 获取持股
+            holdings = await self.db_manager.get_user_holdings_aggregated(user_id)
+            total_stock_value = sum(h['market_value'] for h in holdings)
+
+            # 获取现金余额
+            balance = 0
+            if self.economy_api:
+                balance = await self.economy_api.get_coins(user_id)
+
+            total_assets = total_stock_value + balance
+
+            return {
+                "cash_balance": balance,
+                "stock_value": total_stock_value,
+                "total_assets": total_assets,
+                "holdings": holdings
+            }
+        except Exception as e:
+            logger.error(f"获取用户资产失败: {e}", exc_info=True)
+            return {"cash_balance": 0, "stock_value": 0, "total_assets": 0, "holdings": []}
+
+    async def get_total_asset_ranking(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """[API] 获取总资产排行榜"""
+        try:
+            # 这里简化处理，实际应该从数据库获取
+            # 返回空列表作为占位符
+            return []
+        except Exception as e:
+            logger.error(f"获取排行榜失败: {e}", exc_info=True)
+            return []

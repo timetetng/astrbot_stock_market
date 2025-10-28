@@ -95,6 +95,7 @@ class VirtualStock:
     daily_close_history: deque = field(default_factory=lambda: deque(maxlen=20))
     kline_history: deque = field(default_factory=lambda: deque(maxlen=9000))
     market_pressure: float = 0.0
+    pending_sell_pressure: float = 0.0  # 预埋卖压
     is_listed_company: bool = False
     owner_id: Optional[str] = None
     total_shares: int = 0

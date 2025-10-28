@@ -13,15 +13,94 @@ from astrbot.api.event import MessageChain
 from .models import VirtualStock, DailyScript, MarketCycle, DailyBias, Trend
 # ▲▲▲【修改结束】▲▲▲
 
-from .config import NATIVE_EVENT_PROBABILITY_PER_TICK, NATIVE_STOCK_RANDOM_EVENTS, INTRINSIC_VALUE_PRESSURE_FACTOR
+from .config import (NATIVE_EVENT_PROBABILITY_PER_TICK, NATIVE_STOCK_RANDOM_EVENTS,
+                     INTRINSIC_VALUE_PRESSURE_FACTOR, PRESSURE_DECAY_RATE)
 
 if TYPE_CHECKING:
     from .main import StockMarketRefactored
+
+class MarketMaker:
+    """市场庄家 - 提供流动性并平抑价格波动"""
+
+    def __init__(self, config_dict: dict):
+        self.position_tracker = {}  # 跟踪庄家在每只股票上的持仓
+        self.budget_per_stock = config_dict.get('MARKET_MAKER_BUDGET', 2000000)
+        self.max_position = config_dict.get('MARKET_MAKER_MAX_POSITION', 20000000)
+        self.base_impact = config_dict.get('MARKET_MAKER_BASE_IMPACT', 0.00002)
+        self.deviation_threshold = config_dict.get('DEVIATION_THRESHOLD', 0.15)
+        self.counter_trade_intensity = config_dict.get('COUNTER_TRADE_INTENSITY', 0.3)
+        self.pressure_threshold = config_dict.get('MARKET_PRESSURE_THRESHOLD', 50000)
+
+    async def analyze_and_trade(self, stock, current_price: float,
+                               fundamental_value: float, market_pressure: float) -> float:
+        """
+        分析市场并执行反向交易
+        返回：庄家交易对价格的影响（正为上涨，负为下跌）
+        """
+        if fundamental_value <= 0:
+            return 0.0
+
+        # 计算价格偏离度
+        deviation_ratio = current_price / fundamental_value
+
+        # 获取当前持仓
+        current_position = self.position_tracker.get(stock.stock_id, 0.0)
+
+        # 庄家交易逻辑
+        price_impact = 0.0
+
+        # 1. 价格过高时卖出（保护散户）
+        if deviation_ratio > (1.0 + self.deviation_threshold):
+            deviation_excess = deviation_ratio - (1.0 + self.deviation_threshold)
+            sell_intensity = min(0.25, deviation_excess * 2)  # 最大卖出25%资金
+            sell_amount = self.budget_per_stock * sell_intensity
+            price_impact -= sell_amount * self.base_impact
+            current_position -= sell_amount
+
+        # 2. 价格过低时买入（抄底）
+        elif deviation_ratio < (1.0 - self.deviation_threshold):
+            deviation_deficit = (1.0 - self.deviation_threshold) - deviation_ratio
+            buy_intensity = min(0.25, deviation_deficit * 2)
+            buy_amount = self.budget_per_stock * buy_intensity
+            price_impact += buy_amount * self.base_impact
+            current_position += buy_amount
+
+        # 3. 市场压力过强时反向操作
+        if abs(market_pressure) > self.pressure_threshold:
+            counter_trade = market_pressure * self.counter_trade_intensity
+            if market_pressure > 0:  # 上涨压力过大，庄家卖出
+                price_impact -= abs(counter_trade) * self.base_impact * 5  # 强力反向
+                current_position -= abs(counter_trade)
+            else:  # 下跌压力过大，庄家买入
+                price_impact += abs(counter_trade) * self.base_impact * 5
+                current_position += abs(counter_trade)
+
+        # 限制最大持仓
+        self.position_tracker[stock.stock_id] = max(-self.max_position,
+                                                   min(self.max_position, current_position))
+
+        return price_impact
 
 class MarketSimulation:
     def __init__(self, plugin: "StockMarketRefactored"):
         self.plugin = plugin
         self.task: Optional[asyncio.Task] = None
+        # ======【初始化庄家系统】======
+        from .config import (MARKET_MAKER_ENABLED, MARKET_MAKER_BUDGET, MARKET_MAKER_MAX_POSITION,
+                            MARKET_MAKER_BASE_IMPACT, DEVIATION_THRESHOLD, COUNTER_TRADE_INTENSITY,
+                            MARKET_PRESSURE_THRESHOLD)
+        if MARKET_MAKER_ENABLED:
+            config_dict = {
+                'MARKET_MAKER_BUDGET': MARKET_MAKER_BUDGET,
+                'MARKET_MAKER_MAX_POSITION': MARKET_MAKER_MAX_POSITION,
+                'MARKET_MAKER_BASE_IMPACT': MARKET_MAKER_BASE_IMPACT,
+                'DEVIATION_THRESHOLD': DEVIATION_THRESHOLD,
+                'COUNTER_TRADE_INTENSITY': COUNTER_TRADE_INTENSITY,
+                'MARKET_PRESSURE_THRESHOLD': MARKET_PRESSURE_THRESHOLD
+            }
+            self.market_maker = MarketMaker(config_dict)
+        else:
+            self.market_maker = None
 
     def start(self):
         """启动价格更新循环任务。"""
@@ -189,9 +268,26 @@ class MarketSimulation:
 
                         intraday_anchor_force = (script.target_close - open_price) / 288 * 0.05
                         pressure_influence = stock.market_pressure * 0.01
-                        stock.market_pressure *= 0.95
-                        
-                        total_change = trend_influence + random_walk + short_term_reversion_force + intraday_anchor_force + pressure_influence
+                        # ======【加快压力衰减】======
+                        stock.market_pressure *= PRESSURE_DECAY_RATE  # 每tick衰减15%
+                        # 处理预埋卖压：缓慢转化为实际卖压
+                        if hasattr(stock, 'pending_sell_pressure') and stock.pending_sell_pressure > 0:
+                            stock.pending_sell_pressure *= 0.90  # 每tick衰减10%
+                            # 一部分预埋卖压转化为实际市场压力
+                            convert_rate = 0.05
+                            converted_pressure = stock.pending_sell_pressure * convert_rate
+                            stock.market_pressure -= converted_pressure
+                            stock.pending_sell_pressure -= converted_pressure
+
+                        # ======【庄家系统介入】======
+                        market_maker_impact = 0.0
+                        if self.market_maker:
+                            market_maker_impact = await self.market_maker.analyze_and_trade(
+                                stock, open_price, stock.fundamental_value, stock.market_pressure
+                            )
+
+                        total_change = (trend_influence + random_walk + short_term_reversion_force +
+                                       intraday_anchor_force + pressure_influence + market_maker_impact)
                         close_price = round(max(0.01, open_price + total_change), 2)
                         
                         # --- ▲▲▲【核心算法结束】▲▲▲
