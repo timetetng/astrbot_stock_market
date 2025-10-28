@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .main import StockMarketRefactored
 
 class MarketMaker:
-    """市场庄家 - 提供流动性并平抑价格波动"""
+    """市场庄家 - 提供流动性、平抑价格波动、主动做局"""
 
     def __init__(self, config_dict: dict):
         self.position_tracker = {}  # 跟踪庄家在每只股票上的持仓
@@ -31,53 +31,172 @@ class MarketMaker:
         self.counter_trade_intensity = config_dict.get('COUNTER_TRADE_INTENSITY', 0.3)
         self.pressure_threshold = config_dict.get('MARKET_PRESSURE_THRESHOLD', 50000)
 
+        # ====== 【新增】做局系统配置 ======
+        self.rig_probability = 0.10  # 每次tick做局概率10%
+        self.rig_cooldown = 20  # 做局后冷却20个tick (约3小时)
+        self.max_rig_pressure = 200  # 做局时最大压力值
+        self.trap_duration = 10  # 做局持续10个tick
+
+        # 做局状态跟踪
+        self.rig_state = {}  # 状态: None, 'trapping_up', 'trapping_down', 'harvesting', 'cooling'
+        self.rig_progress = {}  # 做局进度 (tick计数)
+        self.rig_cooldown_tracker = {}  # 做局冷却计时器
+
+        logger.info("[庄家系统] 增强版已启用：主动做局 + 打击抄底")
+
     async def analyze_and_trade(self, stock, current_price: float,
                                fundamental_value: float, market_pressure: float) -> float:
         """
-        分析市场并执行反向交易
+        分析市场并执行反向交易或主动做局
         返回：庄家交易对价格的影响（正为上涨，负为下跌）
         """
         if fundamental_value <= 0:
             return 0.0
 
+        stock_id = stock.stock_id
+
         # 计算价格偏离度
         deviation_ratio = current_price / fundamental_value
 
         # 获取当前持仓
-        current_position = self.position_tracker.get(stock.stock_id, 0.0)
+        current_position = self.position_tracker.get(stock_id, 0.0)
 
-        # 庄家交易逻辑
+        # ====== 【核心】庄家做局与防御逻辑 ======
         price_impact = 0.0
+        rig_state = self.rig_state.get(stock_id, None)
+        rig_progress = self.rig_progress.get(stock_id, 0)
+        cooldown = self.rig_cooldown_tracker.get(stock_id, 0)
 
-        # 1. 价格过高时卖出（保护散户）
-        if deviation_ratio > (1.0 + self.deviation_threshold):
-            deviation_excess = deviation_ratio - (1.0 + self.deviation_threshold)
-            sell_intensity = min(0.25, deviation_excess * 2)  # 最大卖出25%资金
-            sell_amount = self.budget_per_stock * sell_intensity
-            price_impact -= sell_amount * self.base_impact
-            current_position -= sell_amount
+        # 1. 更新做局状态和冷却
+        if rig_state == 'cooling':
+            cooldown -= 1
+            if cooldown <= 0:
+                rig_state = None
+                cooldown = 0
+            self.rig_cooldown_tracker[stock_id] = cooldown
 
-        # 2. 价格过低时买入（抄底）
-        elif deviation_ratio < (1.0 - self.deviation_threshold):
-            deviation_deficit = (1.0 - self.deviation_threshold) - deviation_ratio
-            buy_intensity = min(0.25, deviation_deficit * 2)
-            buy_amount = self.budget_per_stock * buy_intensity
-            price_impact += buy_amount * self.base_impact
-            current_position += buy_amount
+        # 2. 做局逻辑：先引诱，再收割
+        if rig_state:
+            if rig_state == 'trapping_up':
+                # 阶段1: 做局拉高，制造假突破
+                trap_pressure = (self.max_rig_pressure * 0.6) + (rig_progress * 5)
+                price_impact += trap_pressure * self.base_impact * 5
+                current_position += trap_pressure
+                rig_progress += 1
 
-        # 3. 市场压力过强时反向操作
-        if abs(market_pressure) > self.pressure_threshold:
-            counter_trade = market_pressure * self.counter_trade_intensity
-            if market_pressure > 0:  # 上涨压力过大，庄家卖出
-                price_impact -= abs(counter_trade) * self.base_impact * 5  # 强力反向
-                current_position -= abs(counter_trade)
-            else:  # 下跌压力过大，庄家买入
-                price_impact += abs(counter_trade) * self.base_impact * 5
-                current_position += abs(counter_trade)
+                # 完成做局，转入收割阶段
+                if rig_progress >= self.trap_duration:
+                    rig_state = 'harvesting_up'
+                    rig_progress = 0
+                    logger.info(f"[庄家做局] {stock.name}({stock_id}) 开始收割！拉高诱多阶段完成")
+
+            elif rig_state == 'trapping_down':
+                # 阶段1: 做局打压，制造假跌破
+                trap_pressure = (self.max_rig_pressure * 0.6) + (rig_progress * 5)
+                price_impact -= trap_pressure * self.base_impact * 5
+                current_position -= trap_pressure
+                rig_progress += 1
+
+                if rig_progress >= self.trap_duration:
+                    rig_state = 'harvesting_down'
+                    rig_progress = 0
+                    logger.info(f"[庄家做局] {stock.name}({stock_id}) 开始收割！打压恐慌阶段完成")
+
+            elif rig_state == 'harvesting_up':
+                # 阶段2: 收割 - 拉高后快速砸盘出货
+                harvest_pressure = self.max_rig_pressure
+                price_impact -= harvest_pressure * self.base_impact * 8  # 强力砸盘
+                current_position -= harvest_pressure
+                rig_progress += 1
+
+                if rig_progress >= 5:
+                    rig_state = 'cooling'
+                    rig_progress = 0
+                    cooldown = self.rig_cooldown
+                    logger.info(f"[庄家做局] {stock.name}({stock_id}) 收割完成，进入冷却期")
+
+            elif rig_state == 'harvesting_down':
+                # 阶段2: 收割 - 打压后快速拉起吸筹
+                harvest_pressure = self.max_rig_pressure
+                price_impact += harvest_pressure * self.base_impact * 8  # 强力拉升
+                current_position += harvest_pressure
+                rig_progress += 1
+
+                if rig_progress >= 5:
+                    rig_state = 'cooling'
+                    rig_progress = 0
+                    cooldown = self.rig_cooldown
+                    logger.info(f"[庄家做局] {stock.name}({stock_id}) 收割完成，进入冷却期")
+
+        # 3. 被动防御逻辑（原有）
+        else:
+            # 3a. 价格过高时卖出（保护散户）
+            if deviation_ratio > (1.0 + self.deviation_threshold):
+                deviation_excess = deviation_ratio - (1.0 + self.deviation_threshold)
+                sell_intensity = min(0.25, deviation_excess * 2)
+                sell_amount = self.budget_per_stock * sell_intensity
+                price_impact -= sell_amount * self.base_impact
+                current_position -= sell_amount
+
+            # 3b. 价格过低时买入（抄底）
+            elif deviation_ratio < (1.0 - self.deviation_threshold):
+                deviation_deficit = (1.0 - self.deviation_threshold) - deviation_ratio
+                buy_intensity = min(0.25, deviation_deficit * 2)
+                buy_amount = self.budget_per_stock * buy_intensity
+                price_impact += buy_amount * self.base_impact
+                current_position += buy_amount
+
+            # 3c. 市场压力过强时反向操作
+            if abs(market_pressure) > self.pressure_threshold:
+                counter_trade = market_pressure * self.counter_trade_intensity
+                if market_pressure > 0:  # 上涨压力过大，庄家卖出
+                    price_impact -= abs(counter_trade) * self.base_impact * 5
+                    current_position -= abs(counter_trade)
+                else:  # 下跌压力过大，庄家买入
+                    price_impact += abs(counter_trade) * self.base_impact * 5
+                    current_position += abs(counter_trade)
+
+            # 3d. 【新增】打击抄底 - 当价格暴跌时继续砸盘
+            # 计算近5个tick的价格变化率（假设可以通过stock对象获取历史价格）
+            if hasattr(stock, 'price_history'):
+                # 确保 price_history 是正确的类型 (deque)
+                if isinstance(stock.price_history, str):
+                    # 如果 price_history 变成了字符串，重新初始化为空 deque
+                    from collections import deque
+                    stock.price_history = deque(maxlen=60)
+                    logger.warning(f"[庄家] {stock.name}({stock_id}) 的 price_history 类型异常，已重置")
+                elif len(stock.price_history) >= 5:
+                    recent_prices = list(stock.price_history)[-5:]
+                    if len(recent_prices) >= 2:
+                        price_change = (current_price - recent_prices[-2]) / recent_prices[-2]
+                        # 如果近一个tick跌幅>10%，庄家继续砸盘
+                        if price_change < -0.10:
+                            dip_pressure = min(300, abs(market_pressure) + 50)
+                            price_impact -= dip_pressure * self.base_impact * 3
+                            current_position -= dip_pressure
+                            logger.info(f"[庄家] {stock.name}({stock_id}) 打击抄底: 继续砸盘，跌幅{price_change:.1%}")
+
+            # 3e. 【新增】随机开始做局
+            if not rig_state and cooldown <= 0:
+                # 做局概率检查
+                if random.random() < self.rig_probability:
+                    # 随机选择做局方向
+                    # 70%概率做局拉高(假突破)，30%概率做局打压(假跌破)
+                    if random.random() < 0.7:
+                        rig_state = 'trapping_up'
+                        logger.info(f"[庄家做局] {stock.name}({stock_id}) 开始做局：假突破！将拉高诱多")
+                    else:
+                        rig_state = 'trapping_down'
+                        logger.info(f"[庄家做局] {stock.name}({stock_id}) 开始做局：假跌破！将打压恐慌")
+                    rig_progress = 0
+
+        # 更新做局状态
+        self.rig_state[stock_id] = rig_state
+        self.rig_progress[stock_id] = rig_progress
 
         # 限制最大持仓
-        self.position_tracker[stock.stock_id] = max(-self.max_position,
-                                                   min(self.max_position, current_position))
+        self.position_tracker[stock_id] = max(-self.max_position,
+                                             min(self.max_position, current_position))
 
         return price_impact
 
@@ -262,7 +381,12 @@ class MarketSimulation:
                         random_walk = open_price * effective_volatility * random.normalvariate(0, 0.8)
                         
                         short_term_reversion_force = 0
-                        if len(stock.price_history) >= 5:
+                        if isinstance(stock.price_history, str):
+                            # 如果 price_history 变成了字符串，重新初始化为空 deque
+                            from collections import deque
+                            stock.price_history = deque(maxlen=60)
+                            logger.warning(f"[价格更新] {stock.name}({stock_id}) 的 price_history 类型异常，已重置")
+                        elif len(stock.price_history) >= 5:
                             sma5 = sum(list(stock.price_history)[-5:]) / 5
                             short_term_reversion_force = -(open_price - sma5) * 0.15
 

@@ -149,7 +149,19 @@ class DatabaseManager:
                 if not stock.price_history:
                     stock.price_history.append(price)
                 stock.daily_close_history.extend(list(stock.price_history)[-stock.daily_close_history.maxlen:])
-                
+
+                # ===== 【修复】为从数据库加载的股票生成每日剧本 =====
+                from datetime import date
+                from .models import DailyScript, DailyBias
+                today = date.today()
+                # 为每个股票生成今日的每日剧本，确保它们能被价格更新循环处理
+                stock.daily_script = DailyScript(
+                    date=today,
+                    bias=DailyBias.SIDEWAYS,
+                    expected_range_factor=stock.volatility * 10,
+                    target_close=price
+                )
+
                 stocks[stock_id] = stock
         
         logger.info(f"成功从数据库加载 {len(stocks)} 支股票。")
@@ -475,6 +487,11 @@ class DatabaseManager:
 
     async def remove_stock(self, stock_id: str):
         """删除股票"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM stocks WHERE stock_id = ?", (stock_id,))
-            await db.commit()
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("DELETE FROM stocks WHERE stock_id = ?", (stock_id,))
+                await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"删除股票 {stock_id} 失败: {e}", exc_info=True)
+            return False

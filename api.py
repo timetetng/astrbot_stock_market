@@ -52,3 +52,8 @@ class StockMarketAPI:
     async def get_current_total_shares(self, ticker: str) -> Optional[int]:
         """获取股票当前总股本"""
         return await self._plugin.get_current_total_shares(ticker)
+
+    # ====== 【新增】上市公司升级股权重分配API ======
+    async def adjust_holdings_for_corporate_upgrade(self, ticker: str, new_total_shares: int) -> bool:
+        """上市公司升级时，调整所有股东的持股数量，保持总价值不变"""
+        return await self._plugin.api_adjust_holdings_for_corporate_upgrade(ticker, new_total_shares)
