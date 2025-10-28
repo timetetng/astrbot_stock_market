@@ -90,16 +90,19 @@ class TradingManager:
 
         total_order = daily_volume + order_amount
 
-        # 流动性不足惩罚
+        # ▼▼▼【滑点计算优化】▼▼▼
+        # 流动性不足惩罚 - 使用更平滑的滑点计算
         if total_order > EXTREME_SLIPPAGE_THRESHOLD:
-            # 计算极端滑点
-            shortage_ratio = (total_order - EXTREME_SLIPPAGE_THRESHOLD) / EXTREME_SLIPPAGE_THRESHOLD
-            extreme_slippage = min(0.8, shortage_ratio * 0.5 + LIQUIDITY_SHORTAGE_PENALTY)
+            # 计算超额比例（使用对数压缩，避免极端值）
+            excess_ratio = (total_order - EXTREME_SLIPPAGE_THRESHOLD) / EXTREME_SLIPPAGE_THRESHOLD
+            # 使用平方根函数平滑增长，最大滑点限制为20%
+            extreme_slippage = min(0.20, (excess_ratio ** 0.5) * 0.05 + LIQUIDITY_SHORTAGE_PENALTY)
             return True, extreme_slippage, f"⚠️ 流动性紧张！大额订单产生 {extreme_slippage:.1%} 滑点"
         elif order_amount > remaining_liquidity * 0.8:
             # 接近流动性极限
-            medium_slippage = LIQUIDITY_SHORTAGE_PENALTY + (order_amount / remaining_liquidity) * 0.05
+            medium_slippage = LIQUIDITY_SHORTAGE_PENALTY * 0.5 + (order_amount / remaining_liquidity) * 0.02
             return True, medium_slippage, f"⚠️ 接近流动性极限，产生 {medium_slippage:.1%} 滑点"
+        # ▲▲▲【优化结束】▲▲▲
 
         return True, 0.0, ""
 
@@ -130,16 +133,21 @@ class TradingManager:
 
         # 计算交易费用
         trading_fee, fee_msg = await self.calculate_trading_fee(user_id, base_cost, is_sell=False)
-        total_cost = base_cost + trading_fee
+
+        # 计算滑点成本
+        slippage_cost = round(base_cost * additional_slippage, 2)
+
+        # 总成本包含基础成本、手续费和滑点
+        total_cost = base_cost + trading_fee + slippage_cost
 
         balance = await self.plugin.economy_api.get_coins(user_id)
         if balance < total_cost:
-            return False, (f"💰 金币不足！需要 {total_cost:.2f}（含手续费 {trading_fee:.2f}），"
+            return False, (f"💰 金币不足！需要 {total_cost:.2f}（含手续费 {trading_fee:.2f}、滑点 {slippage_cost:.2f}），"
                           f"你只有 {balance:.2f}。")
 
         # 执行扣款
         success = await self.plugin.economy_api.add_coins(user_id, -int(total_cost),
-                                                         f"购买 {quantity} 股 {stock.name}（含手续费 {trading_fee:.2f}）")
+                                                         f"购买 {quantity} 股 {stock.name}（含手续费 {trading_fee:.2f}、滑点 {slippage_cost:.2f}）")
         if not success:
             return False, "❗ 扣款失败，购买操作已取消。"
 
@@ -315,13 +323,103 @@ class TradingManager:
         stock = await self.plugin.find_stock(identifier)
         if not stock: return False, f"❌ 找不到标识符为 '{identifier}' 的股票。"
         if stock.current_price <= 0: return False, "❌ 股价异常，无法购买。"
+
         balance = await self.plugin.economy_api.get_coins(user_id)
-        if balance < stock.current_price:
+
+        # 先尝试买入最大可能的股数来计算总费用
+        max_quantity = int(balance // stock.current_price)
+
+        if max_quantity == 0:
             return False, f"💰 金币不足！\n股价为 ${stock.current_price:.2f}，而您只有 {balance:.2f} 金币，连一股都买不起。"
-        quantity_to_buy = int(balance // stock.current_price)
-        if quantity_to_buy == 0:
-            return False, f"💰 金币不足！\n股价为 ${stock.current_price:.2f}，而您只有 {balance:.2f} 金币，连一股都买不起。"
-        return await self.perform_buy(user_id, identifier, quantity_to_buy)
+
+        # 计算最大购买量对应的交易费用
+        base_cost = round(stock.current_price * max_quantity, 2)
+
+        # 检查流动性并计算滑点
+        can_trade, additional_slippage, liquidity_msg = await self.check_liquidity_and_slippage(
+            stock.stock_id, base_cost, is_buy=True
+        )
+        if not can_trade:
+            return False, liquidity_msg
+
+        # 计算交易手续费
+        trading_fee, fee_msg = await self.calculate_trading_fee(user_id, base_cost, is_sell=False)
+
+        # 计算滑点成本
+        slippage_cost = round(base_cost * additional_slippage, 2)
+
+        # 总费用
+        total_cost = base_cost + trading_fee + slippage_cost
+
+        # 计算实际能买的最大股数（考虑所有费用）
+        if total_cost > balance:
+            # 如果总费用超出余额，重新计算能买的股数
+            # 使用二分法找到最优股数
+            low, high = 0, max_quantity
+            best_quantity = 0
+
+            while low <= high:
+                mid = (low + high) // 2
+                if mid == 0:
+                    break
+
+                test_base_cost = round(stock.current_price * mid, 2)
+                test_can_trade, test_slippage, _ = await self.check_liquidity_and_slippage(
+                    stock.stock_id, test_base_cost, is_buy=True
+                )
+
+                if not test_can_trade:
+                    # 如果流动性不足，尝试更小的数量
+                    high = mid - 1
+                    continue
+
+                test_trading_fee, _ = await self.calculate_trading_fee(user_id, test_base_cost, is_sell=False)
+                test_slippage_cost = round(test_base_cost * test_slippage, 2)
+                test_total_cost = test_base_cost + test_trading_fee + test_slippage_cost
+
+                if test_total_cost <= balance:
+                    best_quantity = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+
+            if best_quantity == 0:
+                return False, f"💰 金币不足！\n扣除手续费和滑点后，无法购买任何股份。\n当前金币：{balance:.2f}\n股价：${stock.current_price:.2f}"
+
+            quantity_to_buy = best_quantity
+            # 重新计算费用并显示给用户
+            final_base_cost = round(stock.current_price * quantity_to_buy, 2)
+            final_trading_fee, _ = await self.calculate_trading_fee(user_id, final_base_cost, is_sell=False)
+            final_can_trade, final_slippage, _ = await self.check_liquidity_and_slippage(
+                stock.stock_id, final_base_cost, is_buy=True
+            )
+            final_slippage_cost = round(final_base_cost * final_slippage, 2)
+            final_total_cost = final_base_cost + final_trading_fee + final_slippage_cost
+
+            # 执行买入操作
+            success, message = await self.perform_buy(user_id, identifier, quantity_to_buy)
+
+            # 如果成功，在消息中显示详细信息
+            if success:
+                # 重新获取余额
+                new_balance = await self.plugin.economy_api.get_coins(user_id)
+                detailed_msg = (
+                    f"⚡ 最大限度买入成功！\n"
+                    f"💰 购买 {quantity_to_buy} 股 {stock.name}\n"
+                    f"💲 基础成本：${final_base_cost:.2f}\n"
+                    f"💳 手续费：${final_trading_fee:.2f}\n"
+                    f"📉 滑点成本：${final_slippage_cost:.2f}\n"
+                    f"💸 总费用：${final_total_cost:.2f}\n"
+                    f"💵 剩余金币：{new_balance:.2f}"
+                )
+                if liquidity_msg and final_slippage > 0:
+                    detailed_msg += f"\n{liquidity_msg}"
+                return True, detailed_msg
+            else:
+                return False, message
+        else:
+            # 如果总费用未超出余额，直接执行购买
+            return await self.perform_buy(user_id, identifier, max_quantity)
 
     async def perform_sell_all_for_stock(self, user_id: str, identifier: str) -> Tuple[bool, str]:
         """执行全抛单支股票的操作"""
