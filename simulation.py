@@ -42,6 +42,11 @@ class MarketMaker:
         self.rig_progress = {}  # 做局进度 (tick计数)
         self.rig_cooldown_tracker = {}  # 做局冷却计时器
 
+        # ======【新增】打击抄底系统配置 ======
+        self.dip_attack_cooldown = {}  # 打击抄底冷却计时器
+        self.dip_attack_threshold = 0.25  # 打击抄底阈值：25%（从10%提升到25%）
+        self.dip_attack_min_interval = 30  # 最小触发间隔：30个tick（约2.5小时）
+
         logger.info("[庄家系统] 增强版已启用：主动做局 + 打击抄底")
 
     async def analyze_and_trade(self, stock, current_price: float,
@@ -156,7 +161,7 @@ class MarketMaker:
                     price_impact += abs(counter_trade) * self.base_impact * 5
                     current_position += abs(counter_trade)
 
-            # 3d. 【新增】打击抄底 - 当价格暴跌时继续砸盘
+            # 3d. 【修复】打击抄底 - 当价格暴跌时继续砸盘（增加冷却机制和数据验证）
             # 计算近5个tick的价格变化率（假设可以通过stock对象获取历史价格）
             if hasattr(stock, 'price_history'):
                 # 确保 price_history 是正确的类型 (deque)
@@ -165,17 +170,37 @@ class MarketMaker:
                     from collections import deque
                     stock.price_history = deque(maxlen=60)
                     logger.warning(f"[庄家] {stock.name}({stock_id}) 的 price_history 类型异常，已重置")
-                elif len(stock.price_history) >= 5:
-                    recent_prices = list(stock.price_history)[-5:]
-                    if len(recent_prices) >= 2:
-                        # 修复：使用最近两个tick的收盘价进行比较，避免开盘价与收盘价混合计算
-                        price_change = (recent_prices[-1] - recent_prices[-2]) / recent_prices[-2]
-                        # 如果近一个tick跌幅>10%，庄家继续砸盘
-                        if price_change < -0.10:
-                            dip_pressure = min(100, abs(market_pressure) + 20)  # 降低做空压力（从300降至100）
-                            price_impact -= dip_pressure * self.base_impact * 2  # 降低影响倍数（从3降至2）
-                            current_position -= dip_pressure
-                            logger.info(f"[庄家] {stock.name}({stock_id}) 打击抄底: 继续砸盘，跌幅{price_change:.1%}")
+                elif len(stock.price_history) >= 15:
+                    recent_prices = list(stock.price_history)[-10:]
+                    if len(recent_prices) >= 10:
+                        # 使用最近5-10个周期的数据判断是否触底趋势
+                        # 方法：比较最近5个周期 vs 前5个周期的平均价格
+                        recent_5_avg = sum(recent_prices[-5:]) / 5
+                        previous_5_avg = sum(recent_prices[-10:-5]) / 5
+
+                        # ======【修复】增加数据验证和更严格的触发条件 ======
+                        # 检查数据有效性：价格不能为0、负数或异常值
+                        if (previous_5_avg > 0 and recent_5_avg > 0 and
+                            all(p > 0 for p in recent_prices[-10:]) and  # 确保所有价格都大于0
+                            abs(previous_5_avg - recent_5_avg) / previous_5_avg < 0.5):  # 排除极端异常值（跌幅>50%）
+
+                            avg_decline_rate = (previous_5_avg - recent_5_avg) / previous_5_avg
+
+                            # 检查冷却状态
+                            dip_cooldown = self.dip_attack_cooldown.get(stock_id, 0)
+                            if dip_cooldown > 0:
+                                self.dip_attack_cooldown[stock_id] = dip_cooldown - 1
+
+                            # 触发条件：跌幅超过25%且不在冷却期
+                            if avg_decline_rate > self.dip_attack_threshold and dip_cooldown <= 0:
+                                dip_pressure = min(80, abs(market_pressure) + 15)  # 降低做空压力（从100降至80）
+                                price_impact -= dip_pressure * self.base_impact * 1.5  # 降低影响倍数（从2降至1.5）
+                                current_position -= dip_pressure
+                                # 设置冷却期
+                                self.dip_attack_cooldown[stock_id] = self.dip_attack_min_interval
+                                logger.info(f"[庄家] {stock.name}({stock_id}) 打击抄底: 继续砸盘，平均跌幅{avg_decline_rate:.1%}，冷却{self.dip_attack_min_interval}个tick")
+                            elif avg_decline_rate > 0.10:  # 如果跌幅在10%-25%之间，仅记录日志不触发
+                                logger.debug(f"[庄家] {stock.name}({stock_id}) 检测到底部信号但未触发（跌幅{avg_decline_rate:.1%} < 阈值{self.dip_attack_threshold:.1%}）")
 
             # 3e. 【新增】随机开始做局
             if not rig_state and cooldown <= 0:
