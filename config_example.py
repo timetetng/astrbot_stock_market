@@ -101,3 +101,50 @@ NATIVE_STOCK_RANDOM_EVENTS = [
         "weight": 3
     }
 ]
+
+# ================== V6.0 平衡机制配置 ==================
+
+# --- 流动性池系统 ---
+DAILY_LIQUIDITY_LIMIT = 1000000  # 单只股票每日系统接盘上限（金币）
+EXTREME_SLIPPAGE_THRESHOLD = 500000  # 开始极端滑点的阈值（金币）
+MAX_DAILY_TRADES_PER_USER = 50  # 单用户日交易次数限制
+LIQUIDITY_SHORTAGE_PENALTY = 0.1  # 流动性不足时的额外滑点
+
+# --- 渐进式交易费用系统 ---
+# 交易额阶梯（元金币，最大值） -> 费率倍数
+# 例如：10万以下使用1倍费率，10万到50万使用3倍费率，等等
+LARGE_TRADE_FEE_TIERS = {
+    99999: 1.0,      # 10万以下：1倍费率（实际区间：0 - 99,999）
+    499999: 3.0,     # 10-50万：3倍费率（实际区间：100,000 - 499,999）
+    799999: 8.0,     # 50-80万：8倍费率（实际区间：500,000 - 799,999）
+    999999: 15.0,    # 80-100万：15倍费率（实际区间：800,000 - 999,999）
+    999999999: 50.0  # 100万以上：50倍费率（实际区间：1,000,000+）
+}
+
+# 频繁交易惩罚
+FREQUENT_TRADE_THRESHOLD = 5  # 1小时内交易次数阈值
+FREQUENT_TRADE_PENALTY = 2.0  # 频繁交易费率倍数
+MAX_TRADES_FOR_PENALTY = 20  # 超过此交易次数强制惩罚
+
+# --- 市场庄家系统 ---
+MARKET_MAKER_ENABLED = True  # 是否启用庄家系统
+MARKET_MAKER_BUDGET = 2000000  # 每只股票庄家初始资金（金币）
+MARKET_MAKER_MAX_POSITION = 20000000  # 庄家最大持仓（金币）
+MARKET_MAKER_BASE_IMPACT = 0.00002  # 庄家交易对价格的基础影响系数
+DEVIATION_THRESHOLD = 0.15  # 价格偏离内在价值的干预阈值（15%）
+COUNTER_TRADE_INTENSITY = 0.3  # 反向交易力度（30%）
+MARKET_PRESSURE_THRESHOLD = 50000  # 市场压力干预阈值
+
+# --- 对称性市场压力系统 ---
+COST_PRESSURE_FACTOR = 0.0000002  # 买入压力系数（降低，原0.0000005）
+PROFIT_SELL_PRESSURE_MULTIPLIER = 2.0  # 盈利卖出压力倍数
+SELL_PRESSURE_FACTOR = 0.0000003  # 卖出压力系数
+PRESSURE_DECAY_RATE = 0.85  # 市场压力每tick衰减率（15%衰减）
+PENDING_SELL_PRESSURE_RATIO = 0.8  # 买入时预埋卖压的比例
+
+# ====== 【动态增发机制配置】======
+# 增发系数：每次有人买入股票时，会增发一定比例的新股
+IPO_DILUTION_RATIO = 0.8  # 增发系数（0-1之间，越大稀释越快）
+
+# 单次增发上限（防止极端情况）
+MAX_DILUTION_PER_TRADE = 1000000  # 单次最多增发100万股
