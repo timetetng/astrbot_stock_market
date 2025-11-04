@@ -1,12 +1,31 @@
-# astrbot\_stock\_market (模拟股票市场)
+<h1 align="center">
+Astrbot 虚拟股票市场插件
+
+</h1>
 
 `astrbot_stock_market` 是一个为 AstrBot 设计的高度模块化的模拟股票交易插件。它构建了一个动态的、持续变化的虚拟股票市场，允许用户进行注册、交易，并通过丰富的指令和现代化的 Web 界面与之交互。该插件不仅模拟了股价的随机波动，还引入了宏观经济周期、市场情绪和随机事件，为用户提供了一个沉浸式的虚拟投资体验。
 
 此外，项目还提供了一套完整的 RESTful API，方便其他开发者或插件进行二次开发和数据集成。
+<h2 align="center">
+<a href="#-showcase">📸 Showcase</a> 
+</h2>
+<table align="center">
+<tr>
+        <td><img src="./example/example2.jpeg" width="400"/></td>
+                <td><img src="./example/example3.png" width="400"/></td>
+  </tr>
+  <tr>
+    <td><img src="./example/example1.jpeg" width="400"/></td>
+       <td><img src="./example/example4.jpeg" width="400"/></td>
+       </tr>
+</table>
 
-[查看 API 接口文档](https://docs.leewater.online/)
+<h4 align="center">
+  <a href="https://docs.leewater.online/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3/API%E6%96%87%E6%A1%A3/%E5%88%9B%E5%BB%BAAPI%E5%85%B1%E4%BA%AB%E7%9B%AE%E5%BD%95.html">✨ 如何使用</a> | <a href="https://docs.leewater.online/">📄 帮助文档</a> | 依赖 <a href="https://github.com/timetetng/astrbot_plugin_sign">经济系统</a> | <a href="https://stock.leewater.online/">📈 WebUI 示例</a> |  <a href="https://docs.leewater.online/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3/%E8%99%9A%E6%8B%9F%E8%82%A1%E7%A5%A8API%E6%8E%A5%E5%8F%A3%E6%96%87%E6%A1%A3.html">🤖 API 文档</a> 
+</h4>
 
-依赖[经济系统](https://github.com/timetetng/astrbot_plugin_sign)
+---
+
 ## ✨ 主要功能
 
   * **动态市场模拟**:
